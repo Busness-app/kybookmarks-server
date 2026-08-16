@@ -527,8 +527,13 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		user, err = s.store.GetAccountBySSOSubject(claims.Subject)
 		if err != nil {
-			user, err = s.store.GetAccountByUsernameOrEmail(claims.Email)
-			if err == nil {
+			if claims.Email != "" {
+				user, err = s.store.GetAccountByUsernameOrEmail(claims.Email)
+			}
+			if user == nil && claims.Username != "" {
+				user, err = s.store.GetAccountByUsernameOrEmail(claims.Username)
+			}
+			if err == nil && user != nil {
 				user.SSOSubject = claims.Subject
 				_ = s.store.UpdateAccount(user)
 			}

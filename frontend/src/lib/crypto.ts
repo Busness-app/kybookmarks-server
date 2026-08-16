@@ -123,7 +123,25 @@ export async function unwrapVaultKey(wrappedBase64: string, unwrappingKey: Crypt
     'raw',
     wrapped,
     unwrappingKey,
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: iv as any },
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+  );
+}
+
+// Export raw vault key to base64 for sessionStorage
+export async function exportVaultKeyRaw(vaultKey: CryptoKey): Promise<string> {
+  const raw = await window.crypto.subtle.exportKey('raw', vaultKey);
+  return bytesToBase64(new Uint8Array(raw));
+}
+
+// Import raw vault key from base64
+export async function importVaultKeyRaw(rawBase64: string): Promise<CryptoKey> {
+  const rawBytes = base64ToBytes(rawBase64);
+  return window.crypto.subtle.importKey(
+    'raw',
+    rawBytes as any,
     { name: 'AES-GCM', length: 256 },
     true,
     ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']

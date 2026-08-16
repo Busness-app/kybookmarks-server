@@ -9,40 +9,44 @@ import {
   deriveAuthSecret,
   generatePaperRecoveryKey,
 } from '../lib/crypto';
-import { Bookmark, Lock, ShieldCheck, Key, ArrowRight, RefreshCw, AlertCircle } from 'lucide-react';
+import { Bookmark, Lock, ShieldCheck, Key, ArrowRight, RefreshCw, AlertCircle, LogOut } from 'lucide-react';
 
 interface LoginPageProps {
+  loggedInUser?: any | null;
   onLoginSuccess: (user: any, vaultKey: CryptoKey) => void;
+  onLogout?: () => void;
 }
 
-export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
+export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSuccess, onLogout }) => {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [ssoConfig, setSSOConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
   const [viewMode, setViewMode] = useState<'login' | 'setup' | 'recovery'>('login');
 
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(loggedInUser?.username || '');
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [recoverySecret, setRecoverySecret] = useState('');
 
-  const [generatedPaperKey, setGeneratedPaperKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    getJSON<{ needsSetup: boolean }>('/api/setup')
-      .then((res) => {
-        setNeedsSetup(res.needsSetup);
-        if (res.needsSetup) setViewMode('setup');
-      })
-      .catch(() => {});
+    if (!loggedInUser) {
+      getJSON<{ needsSetup: boolean }>('/api/setup')
+        .then((res) => {
+          setNeedsSetup(res.needsSetup);
+          if (res.needsSetup) setViewMode('setup');
+        })
+        .catch(() => {});
 
-    getJSON<{ enabled: boolean; issuerUrl: string }>('/api/auth/sso-config')
-      .then((res) => setSSOConfig(res))
-      .catch(() => {});
-  }, []);
+      getJSON<{ enabled: boolean; issuerUrl: string }>('/api/auth/sso-config')
+        .then((res) => setSSOConfig(res))
+        .catch(() => {});
+    }
+  }, [loggedInUser]);
 
+  // Standard username + password login
   const handleLoginSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -85,6 +89,37 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  // SSO authenticated user: Unlock with Master Password
+  const handleSSOUnlockSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!loggedInUser) return;
+    setBusy(true);
+    setError('');
+
+    try {
+      const salt = loggedInUser.authSalt || generateRandomHex(16);
+      const iterations = loggedInUser.kdfIterations || 600000;
+      const passKey = await deriveKeyFromPassword(password, salt, iterations);
+
+      let vaultKey: CryptoKey;
+      if (loggedInUser.passwordKeyWrap) {
+        vaultKey = await unwrapVaultKey(loggedInUser.passwordKeyWrap, passKey);
+      } else {
+        // Newly provisioned SSO account: generate first vault key and wrap
+        vaultKey = await generateVaultKey();
+        const wrapped = await wrapVaultKey(vaultKey, passKey);
+        await postJSON('/api/auth/key-wraps', { passwordKeyWrap: wrapped });
+      }
+
+      onLoginSuccess(loggedInUser, vaultKey);
+    } catch (err) {
+      setError('Incorrect master password. Could not decrypt vault key.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // First time setup
   const handleSetupSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -122,8 +157,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         recoveryVerifier,
       });
 
-      setGeneratedPaperKey(paperKey);
-      // Wait for user to record paper key before entering app
       onLoginSuccess(res.user, vaultKey);
     } catch (err) {
       setError(toErrorMessage(err, 'Failed to initialize administrator account'));
@@ -132,14 +165,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  // Paper recovery key submit
   const handleRecoverySubmit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError('');
 
     try {
+      const targetUser = loggedInUser?.username || username;
       const res = await postJSON<{ ok: boolean; user: any }>('/api/auth/recovery', {
-        username,
+        username: targetUser,
         recoverySecret,
       });
 
@@ -164,7 +199,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           </div>
           <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)' }}>KyBookmarks</h1>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-            {viewMode === 'setup'
+            {loggedInUser
+              ? `Welcome, ${loggedInUser.displayName || loggedInUser.username}`
+              : viewMode === 'setup'
               ? 'First-Time Administrator Setup'
               : viewMode === 'recovery'
               ? 'Vault Emergency Recovery'
@@ -180,7 +217,94 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
             </div>
           )}
 
-          {viewMode === 'login' && (
+          {/* If already authenticated via SSO session */}
+          {loggedInUser ? (
+            <div>
+              <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem 1rem', borderRadius: 'var(--radius)', border: '1px solid var(--border-color)', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <ShieldCheck size={16} color="var(--cyan)" />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>SSO Session Active</span>
+                </div>
+                {onLogout && (
+                  <button
+                    onClick={onLogout}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                  >
+                    <LogOut size={12} />
+                    <span>Sign Out</span>
+                  </button>
+                )}
+              </div>
+
+              {viewMode === 'recovery' ? (
+                <form onSubmit={handleRecoverySubmit}>
+                  <div className="form-group">
+                    <label className="form-label">24-Character Paper Recovery Key</label>
+                    <input
+                      type="text"
+                      className="input input-mono"
+                      placeholder="XXXX-XXXX-XXXX-XXXX"
+                      value={recoverySecret}
+                      onChange={(e) => setRecoverySecret(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
+
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }} disabled={busy}>
+                    {busy ? <RefreshCw size={16} className="spin" /> : <Key size={16} />}
+                    <span>Unlock with Recovery Key</span>
+                  </button>
+
+                  <div style={{ marginTop: '1rem', textAlign: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('login')}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.8rem', cursor: 'pointer' }}
+                    >
+                      Back to Master Password
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={handleSSOUnlockSubmit}>
+                  <div className="form-group">
+                    <label className="form-label">
+                      {loggedInUser.passwordKeyWrap
+                        ? 'Enter Master Password to Decrypt Vault'
+                        : 'Set Master Password to Initialize Vault Encryption'}
+                    </label>
+                    <input
+                      type="password"
+                      className="input"
+                      placeholder="••••••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
+
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }} disabled={busy}>
+                    {busy ? <RefreshCw size={16} className="spin" /> : <Lock size={16} />}
+                    <span>{loggedInUser.passwordKeyWrap ? 'Unlock Vault' : 'Initialize & Open Vault'}</span>
+                  </button>
+
+                  {loggedInUser.recoveryKeyWrap && (
+                    <div style={{ marginTop: '1rem', textAlign: 'center' }}>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('recovery')}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.8rem', cursor: 'pointer' }}
+                      >
+                        Use emergency recovery key
+                      </button>
+                    </div>
+                  )}
+                </form>
+              )}
+            </div>
+          ) : viewMode === 'login' ? (
             <>
               {ssoConfig?.enabled && (
                 <div style={{ marginBottom: '1.25rem' }}>
@@ -242,9 +366,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 </button>
               </div>
             </>
-          )}
-
-          {viewMode === 'setup' && (
+          ) : viewMode === 'setup' ? (
             <form onSubmit={handleSetupSubmit}>
               <div className="form-group">
                 <label className="form-label">Admin Username</label>
@@ -299,9 +421,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 <span>Initialize Vault & Server</span>
               </button>
             </form>
-          )}
-
-          {viewMode === 'recovery' && (
+          ) : (
             <form onSubmit={handleRecoverySubmit}>
               <div className="form-group">
                 <label className="form-label">Username or Email</label>

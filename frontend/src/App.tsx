@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getJSON, postJSON } from './lib/api';
+import { exportVaultKeyRaw, importVaultKeyRaw } from './lib/crypto';
 import { LoginPage } from './pages/LoginPage';
 import { BookmarksPage } from './pages/BookmarksPage';
 import { SecuritySettings } from './pages/SecuritySettings';
@@ -11,11 +12,10 @@ import {
   ShieldCheck,
   Smartphone,
   LogOut,
-  Settings,
-  Shield,
-  Layers,
   Key,
 } from 'lucide-react';
+
+const SESSION_KEY_NAME = 'kybookmarks_vault_session_key';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any | null>(null);
@@ -28,27 +28,49 @@ export const App: React.FC = () => {
   const [reconciliationConflicts, setReconciliationConflicts] = useState<any[] | null>(null);
 
   useEffect(() => {
-    getJSON('/api/auth/me')
-      .then((u) => {
-        setUser(u);
-      })
-      .catch(() => {
-        setUser(null);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    checkAuth();
   }, []);
 
-  const handleLoginSuccess = (loggedInUser: any, key: CryptoKey) => {
+  const checkAuth = async () => {
+    try {
+      const u = await getJSON('/api/auth/me');
+      setUser(u);
+
+      // Check if we have an active vault key cached in sessionStorage for this tab
+      const cachedKey = sessionStorage.getItem(SESSION_KEY_NAME);
+      if (cachedKey) {
+        try {
+          const imported = await importVaultKeyRaw(cachedKey);
+          setVaultKey(imported);
+        } catch {
+          sessionStorage.removeItem(SESSION_KEY_NAME);
+        }
+      }
+    } catch {
+      setUser(null);
+      setVaultKey(null);
+      sessionStorage.removeItem(SESSION_KEY_NAME);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLoginSuccess = async (loggedInUser: any, key: CryptoKey) => {
     setUser(loggedInUser);
     setVaultKey(key);
+
+    // Cache vault key for tab session
+    try {
+      const exported = await exportVaultKeyRaw(key);
+      sessionStorage.setItem(SESSION_KEY_NAME, exported);
+    } catch {}
   };
 
   const handleLogout = async () => {
     try {
       await postJSON('/api/auth/logout');
     } catch {}
+    sessionStorage.removeItem(SESSION_KEY_NAME);
     setUser(null);
     setVaultKey(null);
   };
@@ -64,7 +86,13 @@ export const App: React.FC = () => {
   }
 
   if (!user || !vaultKey) {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <LoginPage
+        loggedInUser={user}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   return (
