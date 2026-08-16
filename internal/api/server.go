@@ -80,6 +80,24 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/setup", s.handleSetupCheck)
 	mux.HandleFunc("POST /api/setup", s.handleSetupInit)
 
+	// Explicit Favicon routes
+	mux.HandleFunc("GET /favicon.svg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		if data, err := os.ReadFile(filepath.Join(s.cfg.WebDir, "favicon.svg")); err == nil {
+			_, _ = w.Write(data)
+			return
+		}
+		_, _ = w.Write([]byte(defaultFaviconSVG))
+	})
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		if data, err := os.ReadFile(filepath.Join(s.cfg.WebDir, "favicon.ico")); err == nil {
+			_, _ = w.Write(data)
+			return
+		}
+		_, _ = w.Write([]byte(defaultFaviconSVG))
+	})
+
 	// Self & Session
 	mux.HandleFunc("GET /api/auth/me", s.withAuth(s.handleMe))
 	mux.HandleFunc("POST /api/auth/logout", s.withAuth(s.handleLogout))
@@ -315,3 +333,11 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
 }
+
+const defaultFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="14" fill="#0d0f14"/>
+  <rect x="1" y="1" width="62" height="62" rx="13" stroke="#4deeea" stroke-opacity="0.3" stroke-width="1.5"/>
+  <path d="M20 12 H44 C45.1 12 46 12.9 46 14 V52 L32 42 L18 52 V14 C18 12.9 18.9 12 20 12 Z" fill="#121820" stroke="#4deeea" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M32 20 L34.5 25.5 L40.5 26.2 L36 30.2 L37.2 36 L32 33 L26.8 36 L28 30.2 L23.5 26.2 L29.5 25.5 Z" fill="#0d0f14" stroke="#4deeea" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="32" cy="28" r="1.5" fill="#4deeea"/>
+</svg>`
