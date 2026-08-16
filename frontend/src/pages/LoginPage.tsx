@@ -194,8 +194,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSucce
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', backgroundColor: 'var(--bg-primary)' }}>
       <div className="modal-card" style={{ maxWidth: '440px', width: '100%' }}>
         <div style={{ padding: '2rem 1.75rem 1rem', textAlign: 'center' }}>
-          <div style={{ display: 'inline-flex', padding: '0.75rem', borderRadius: '12px', background: 'var(--cyan-dim)', color: 'var(--cyan)', marginBottom: '0.75rem' }}>
-            <Bookmark size={32} />
+          <div style={{ display: 'inline-flex', marginBottom: '0.75rem' }}>
+            <img
+              src="/KyBookmarks.png"
+              alt="KyBookmarks"
+              style={{ width: '64px', height: '64px', borderRadius: '14px', boxShadow: '0 0 20px rgba(77, 238, 234, 0.35)' }}
+            />
           </div>
           <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)' }}>KyBookmarks</h1>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>

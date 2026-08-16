@@ -100,7 +100,7 @@ export const App: React.FC = () => {
       {/* Navbar */}
       <nav className="navbar">
         <div className="nav-brand">
-          <Bookmark size={22} />
+          <img src="/KyBookmarks.png" alt="KyBookmarks" style={{ width: '28px', height: '28px', borderRadius: '6px' }} />
           <span>KyBookmarks</span>
           <span className="brand-badge">E2EE ZERO-KNOWLEDGE</span>
         </div>
