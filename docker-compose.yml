@@ -1,0 +1,42 @@
+name: kybookmarks-server
+
+services:
+  kybookmarks-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: KyBookmarks-Server
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      kypost-net:
+        ipv4_address: ${KYBOOKMARKS_IP:-10.89.0.6}
+
+    ports:
+      - "${KYBOOKMARKS_BIND:-127.0.0.1}:5869:5869"
+
+    environment:
+      PORT: 5869
+      DATA_DIR: /app/data
+      WEB_DIR: /app/frontend/dist
+      HMAC_SECRET: ${HMAC_SECRET:-kybookmarks-default-hmac-secret}
+      SYNC_SECRET: ${SYNC_SECRET:-kybookmarks-default-sync-secret}
+
+    volumes:
+      - kybookmarks_data:/app/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5869/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  kybookmarks_data:
+
+networks:
+  kypost-net:
+    external: true
