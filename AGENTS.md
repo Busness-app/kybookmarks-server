@@ -50,3 +50,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - DOX hierarchy scope is app-only.
 
 ## Child DOX Index
+
+- `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
+  to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
+  clear stored secrets from browser storage.

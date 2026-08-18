@@ -23,12 +23,14 @@ interface SecuritySettingsProps {
   user: any;
   vaultKey: CryptoKey;
   onUserUpdated: (u: any) => void;
+  onForgetDevice?: () => void;
 }
 
 export const SecuritySettings: React.FC<SecuritySettingsProps> = ({
   user,
   vaultKey,
   onUserUpdated,
+  onForgetDevice,
 }) => {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -272,6 +274,23 @@ export const SecuritySettings: React.FC<SecuritySettingsProps> = ({
               <ShieldCheck size={14} />
               <span>Link KySignOn SSO</span>
             </a>
+          )}
+        </div>
+
+        {/* Local Device Vault & 1-Click SSO */}
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.5rem', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+            <Lock size={18} color="var(--cyan)" />
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 600 }}>This Device & 1-Click SSO</h2>
+          </div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+            This browser holds your local zero-knowledge encryption key in its secure storage vault to allow instant 1-click SSO access.
+          </p>
+
+          {onForgetDevice && (
+            <button className="btn btn-danger btn-sm" onClick={onForgetDevice}>
+              <span>Forget This Device & Sign Out</span>
+            </button>
           )}
         </div>
 

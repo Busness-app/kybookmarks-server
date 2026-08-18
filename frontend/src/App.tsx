@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getJSON, postJSON } from './lib/api';
 import { exportVaultKeyRaw, importVaultKeyRaw } from './lib/crypto';
+import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from './lib/storage';
 import { LoginPage } from './pages/LoginPage';
 import { BookmarksPage } from './pages/BookmarksPage';
 import { SecuritySettings } from './pages/SecuritySettings';
@@ -33,15 +34,20 @@ export const App: React.FC = () => {
 
   const checkAuth = async () => {
     try {
-      const u = await getJSON('/api/auth/me');
+      const u = await getJSON<any>('/api/auth/me');
       setUser(u);
 
-      // Check if we have an active vault key cached in sessionStorage for this tab
-      const cachedKey = sessionStorage.getItem(SESSION_KEY_NAME);
+      // Check if we have an active vault key cached in sessionStorage or local device vault
+      let cachedKey = sessionStorage.getItem(SESSION_KEY_NAME);
+      if (!cachedKey && u?.username) {
+        cachedKey = (await getDeviceVaultKey(u.username).catch(() => undefined)) || null;
+      }
+
       if (cachedKey) {
         try {
           const imported = await importVaultKeyRaw(cachedKey);
           setVaultKey(imported);
+          sessionStorage.setItem(SESSION_KEY_NAME, cachedKey);
         } catch {
           sessionStorage.removeItem(SESSION_KEY_NAME);
         }
@@ -59,10 +65,13 @@ export const App: React.FC = () => {
     setUser(loggedInUser);
     setVaultKey(key);
 
-    // Cache vault key for tab session
+    // Cache vault key for tab session and persistent local device vault
     try {
       const exported = await exportVaultKeyRaw(key);
       sessionStorage.setItem(SESSION_KEY_NAME, exported);
+      if (loggedInUser?.username) {
+        await storeDeviceVaultKey(loggedInUser.username, exported);
+      }
     } catch {}
   };
 
@@ -73,6 +82,13 @@ export const App: React.FC = () => {
     sessionStorage.removeItem(SESSION_KEY_NAME);
     setUser(null);
     setVaultKey(null);
+  };
+
+  const handleForgetDevice = async () => {
+    if (user?.username) {
+      await clearDeviceVaultKey(user.username);
+    }
+    await handleLogout();
   };
 
   if (loading) {
@@ -91,6 +107,7 @@ export const App: React.FC = () => {
         loggedInUser={user}
         onLoginSuccess={handleLoginSuccess}
         onLogout={handleLogout}
+        onForgetDevice={handleForgetDevice}
       />
     );
   }
@@ -169,6 +186,7 @@ export const App: React.FC = () => {
           user={user}
           vaultKey={vaultKey}
           onUserUpdated={(u) => setUser(u)}
+          onForgetDevice={handleForgetDevice}
         />
       )}
 

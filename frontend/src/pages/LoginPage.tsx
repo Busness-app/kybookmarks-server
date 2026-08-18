@@ -15,9 +15,10 @@ interface LoginPageProps {
   loggedInUser?: any | null;
   onLoginSuccess: (user: any, vaultKey: CryptoKey) => void;
   onLogout?: () => void;
+  onForgetDevice?: () => void;
 }
 
-export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSuccess, onLogout }) => {
+export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSuccess, onLogout, onForgetDevice }) => {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [ssoConfig, setSSOConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
   const [viewMode, setViewMode] = useState<'login' | 'setup' | 'recovery'>('login');
@@ -225,14 +226,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSucce
           {loggedInUser ? (
             <div>
               <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem 1rem', borderRadius: 'var(--radius)', border: '1px solid var(--border-color)', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <ShieldCheck size={16} color="var(--cyan)" />
-                  <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>SSO Session Active</span>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <ShieldCheck size={16} color="var(--cyan)" />
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>SSO Session Active</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                    Enter master password once to unlock and trust this device for 1-click SSO.
+                  </div>
                 </div>
                 {onLogout && (
                   <button
                     onClick={onLogout}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}
                   >
                     <LogOut size={12} />
                     <span>Sign Out</span>
