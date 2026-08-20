@@ -54,3 +54,4 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
+- `zero_code_pairing_handoff_spec.md`: contract for pairing this service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. This repo owns the client half (`POST /api/pairing/claim`, `POST /api/backup/push`); KyRecovery owns the spec.
