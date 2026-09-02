@@ -78,6 +78,7 @@ func main() {
 	cfg := api.Config{
 		WebDir:     webDir,
 		DataDir:    dataDir,
+		ConfigDir:  configDir,
 		SyncSecret: syncSecret,
 	}
 

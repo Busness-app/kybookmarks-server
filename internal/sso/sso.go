@@ -220,6 +220,8 @@ func ParseClaims(ctx context.Context, idToken, accessToken, userinfoEndpoint str
 					}
 					if claims.Email == "" {
 						claims.Email = uClaims.Email
+						// Verification travels with the address it describes.
+						claims.EmailVerified = uClaims.EmailVerified
 					}
 					if claims.Name == "" {
 						claims.Name = uClaims.Name
