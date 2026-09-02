@@ -40,7 +40,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	tracker, exists := s.loginAttempts[cleanUser]
 	if exists && time.Now().Before(tracker.blockedUntil) {
 		s.loginAttemptsMu.Unlock()
-		_, _ = s.audit.Log("auth.login_blocked", "", "", ip, "login blocked due to rate limit for "+cleanUser)
+		_, _ = s.audit.Log(r.Context(), "auth.login_blocked", "", "", ip, "login blocked due to rate limit for "+cleanUser)
 		http.Error(w, `{"error":"too_many_attempts","message":"Account temporarily locked for 15 minutes"}`, http.StatusTooManyRequests)
 		return
 	}
@@ -49,7 +49,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	acc, err := s.store.GetAccountByUsernameOrEmail(cleanUser)
 	if err != nil {
 		s.recordFailedLogin(cleanUser)
-		_, _ = s.audit.Log("auth.login_failed", "", "", ip, "user not found: "+cleanUser)
+		_, _ = s.audit.Log(r.Context(), "auth.login_failed", "", "", ip, "user not found: "+cleanUser)
 		http.Error(w, `{"error":"invalid_credentials"}`, http.StatusUnauthorized)
 		return
 	}
@@ -71,7 +71,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !verified {
 		s.recordFailedLogin(cleanUser)
-		_, _ = s.audit.Log("auth.login_failed", acc.ID, "", ip, "bad password for "+cleanUser)
+		_, _ = s.audit.Log(r.Context(), "auth.login_failed", acc.ID, "", ip, "bad password for "+cleanUser)
 		http.Error(w, `{"error":"invalid_credentials"}`, http.StatusUnauthorized)
 		return
 	}
@@ -87,7 +87,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("auth.login", acc.ID, "", ip, "user signed in")
+	_, _ = s.audit.Log(r.Context(), "auth.login", acc.ID, "", ip, "user signed in")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"token": token,
@@ -130,7 +130,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	tracker, exists := s.loginAttempts[cleanUser]
 	if exists && time.Now().Before(tracker.blockedUntil) {
 		s.loginAttemptsMu.Unlock()
-		_, _ = s.audit.Log("auth.recovery_blocked", "", "", ip, "recovery blocked due to rate limit for "+cleanUser)
+		_, _ = s.audit.Log(r.Context(), "auth.recovery_blocked", "", "", ip, "recovery blocked due to rate limit for "+cleanUser)
 		http.Error(w, `{"error":"too_many_attempts","message":"Account temporarily locked for 15 minutes"}`, http.StatusTooManyRequests)
 		return
 	}
@@ -139,14 +139,14 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	acc, err := s.store.GetAccountByUsernameOrEmail(cleanUser)
 	if err != nil {
 		s.recordFailedLogin(cleanUser)
-		_, _ = s.audit.Log("auth.recovery_failed", "", "", ip, "recovery attempt for unknown user: "+cleanUser)
+		_, _ = s.audit.Log(r.Context(), "auth.recovery_failed", "", "", ip, "recovery attempt for unknown user: "+cleanUser)
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
 		return
 	}
 
 	// Suspension must hold here exactly as it does on the login path.
 	if acc.Status != "active" {
-		_, _ = s.audit.Log("auth.recovery_failed", acc.ID, "", ip, "recovery attempt on suspended account")
+		_, _ = s.audit.Log(r.Context(), "auth.recovery_failed", acc.ID, "", ip, "recovery attempt on suspended account")
 		http.Error(w, `{"error":"account_suspended"}`, http.StatusForbidden)
 		return
 	}
@@ -154,7 +154,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	cleanSecret := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(req.RecoverySecret)), "-", "")
 	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.AuthSalt, acc.RecoveryVerifier) {
 		s.recordFailedLogin(cleanUser)
-		_, _ = s.audit.Log("auth.recovery_failed", acc.ID, "", ip, "failed recovery key attempt")
+		_, _ = s.audit.Log(r.Context(), "auth.recovery_failed", acc.ID, "", ip, "failed recovery key attempt")
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
 		return
 	}
@@ -169,7 +169,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("auth.recovery_success", acc.ID, "", clientIP(r), "user unlocked vault via paper recovery key")
+	_, _ = s.audit.Log(r.Context(), "auth.recovery_success", acc.ID, "", clientIP(r), "user unlocked vault via paper recovery key")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
 		"token": token,
@@ -289,7 +289,7 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("setup.init", admin.ID, "", clientIP(r), "initialized initial admin account: "+admin.Username)
+	_, _ = s.audit.Log(r.Context(), "setup.init", admin.ID, "", clientIP(r), "initialized initial admin account: "+admin.Username)
 	token, _ := s.startSession(w, r, admin.ID, "")
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -383,7 +383,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("auth.password_change", acc.ID, "", clientIP(r), "password updated and key re-wrapped")
+	_, _ = s.audit.Log(r.Context(), "auth.password_change", acc.ID, "", clientIP(r), "password updated and key re-wrapped")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -415,7 +415,7 @@ func (s *Server) handleUpdateKeyWraps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("vault.key_wraps_updated", acc.ID, "", clientIP(r), "updated vault key wrappers")
+	_, _ = s.audit.Log(r.Context(), "vault.key_wraps_updated", acc.ID, "", clientIP(r), "updated vault key wrappers")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -566,7 +566,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			user.SSOSubject = claims.Subject
 			_ = s.store.UpdateAccount(user)
-			_, _ = s.audit.Log("sso.link", user.ID, "", clientIP(r), "linked account to SSO sub: "+claims.Subject)
+			_, _ = s.audit.Log(r.Context(), "sso.link", user.ID, "", clientIP(r), "linked account to SSO sub: "+claims.Subject)
 		}
 	}
 
@@ -584,7 +584,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to link SSO identity", http.StatusInternalServerError)
 				return
 			}
-			_, _ = s.audit.Log("sso.link", existing.ID, "", clientIP(r), "adopted account via verified SSO email: "+claims.Email)
+			_, _ = s.audit.Log(r.Context(), "sso.link", existing.ID, "", clientIP(r), "adopted account via verified SSO email: "+claims.Email)
 			user = existing
 		}
 	}
@@ -617,7 +617,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		user = newUser
-		_, _ = s.audit.Log("sso.provision", user.ID, "", clientIP(r), "provisioned user from SSO: "+user.Username)
+		_, _ = s.audit.Log(r.Context(), "sso.provision", user.ID, "", clientIP(r), "provisioned user from SSO: "+user.Username)
 	}
 
 	if user.Status != "active" {
@@ -626,7 +626,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = s.startSession(w, r, user.ID, "")
-	_, _ = s.audit.Log("auth.sso_login", user.ID, "", clientIP(r), "user signed in via SSO")
+	_, _ = s.audit.Log(r.Context(), "auth.sso_login", user.ID, "", clientIP(r), "user signed in via SSO")
 
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -635,7 +635,7 @@ func (s *Server) handleSSOUnlink(w http.ResponseWriter, r *http.Request) {
 	acc, _ := s.currentUser(r)
 	acc.SSOSubject = ""
 	_ = s.store.UpdateAccount(acc)
-	_, _ = s.audit.Log("sso.unlink", acc.ID, "", clientIP(r), "unlinked SSO identity")
+	_, _ = s.audit.Log(r.Context(), "sso.unlink", acc.ID, "", clientIP(r), "unlinked SSO identity")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

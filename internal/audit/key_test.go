@@ -2,7 +2,9 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +26,7 @@ func newTestLogger(t *testing.T, root string) *Logger {
 
 func mustLog(t *testing.T, l *Logger, action string) Entry {
 	t.Helper()
-	e, err := l.Log(action, "user-1", "device-1", "127.0.0.1", "detail")
+	e, err := l.Log(context.Background(), action, "user-1", "device-1", "127.0.0.1", "detail")
 	if err != nil {
 		t.Fatalf("Log: %v", err)
 	}
@@ -147,8 +149,10 @@ func TestTruncationIsDetected(t *testing.T) {
 	mustVerify(t, l, false, "after emptying the log")
 }
 
-// A truncated log must not be repaired by restarting, and appends must not lower the mark.
-func TestTruncationSurvivesRestartAndAppend(t *testing.T) {
+// A truncated log must not be repaired by restarting. The logger used to resume from
+// whatever record was left and go on appending, which forked the chain at a sequence
+// that already existed; it now refuses to start, and the refusal is repeatable.
+func TestTruncationIsRefusedOnRestart(t *testing.T) {
 	root := t.TempDir()
 	l := newTestLogger(t, root)
 	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
@@ -160,11 +164,12 @@ func TestTruncationSurvivesRestartAndAppend(t *testing.T) {
 	lines := splitLines(data)
 	_ = os.WriteFile(logPath, []byte(string(lines[0])+"\n"), 0600)
 
-	restarted := newTestLogger(t, root)
-	mustVerify(t, restarted, false, "truncated log after restart")
-
-	mustLog(t, restarted, "auth.login")
-	mustVerify(t, restarted, false, "truncated log after a further append")
+	for _, why := range []string{"first restart", "second restart"} {
+		_, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+		if !errors.Is(err, auditchain.ErrTruncated) {
+			t.Fatalf("%s on a truncated log: err=%v, want ErrTruncated", why, err)
+		}
+	}
 }
 
 // Deleting the state file is tampering, not a fresh start.
@@ -343,7 +348,7 @@ func TestVerifyChainIsNotRacedByConcurrentAppends(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 500; i++ {
-			if _, err := l.Log("auth.login", "u", "d", "127.0.0.1", "x"); err != nil {
+			if _, err := l.Log(context.Background(), "auth.login", "u", "d", "127.0.0.1", "x"); err != nil {
 				t.Error(err)
 				return
 			}
@@ -469,5 +474,73 @@ func TestConvergeRefusesAnUnverifiableLog(t *testing.T) {
 	}
 	if !bytes.Equal(tampered, after) {
 		t.Fatal("conversion rewrote a log that verified under no known digest")
+	}
+}
+
+// The one-ahead adoption is only safe because the extra record must carry a digest
+// only a key holder can mint. A forged entry appended past the mark must be refused,
+// not adopted.
+func TestOverrunIsNotAdoptedWithoutTheKey(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted"} {
+		mustLog(t, l, a)
+	}
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forged := Entry{
+		ID:        "forged",
+		Timestamp: time.Now().UTC(),
+		Action:    "admin.user_deleted",
+		PrevHash:  entries[len(entries)-1].Hash,
+		Hash:      strings.Repeat("ab", 32),
+	}
+	data, _ := json.Marshal(forged)
+	f, err := os.OpenFile(filepath.Join(root, "audit", logFile), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(append(data, '\n'))
+	f.Close()
+
+	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); !errors.Is(err, auditchain.ErrBrokenChain) {
+		t.Fatalf("NewLogger on a forged overrun: err=%v, want ErrBrokenChain", err)
+	}
+}
+
+// A mark that cannot be written must not stop the chain from advancing: the record is
+// already on disk, so a chain left behind would fork the log on the next append.
+func TestUnwritableMarkDoesNotForkTheChain(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+
+	configDir := filepath.Join(root, "config")
+	if err := os.Chmod(configDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(configDir, 0700)
+
+	if _, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x"); err == nil {
+		t.Fatal("Log hid an unwritable audit mark")
+	}
+	if _, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x"); err == nil {
+		t.Fatal("Log hid an unwritable audit mark")
+	}
+
+	// The log must still be a single well-formed chain, just ahead of its mark.
+	entries, err := l.readEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := make([]auditchain.Record, 0, len(entries))
+	for i, e := range entries {
+		records = append(records, recordOf(e, uint64(i+1)))
+	}
+	if err := auditchain.Verify(l.key, records, auditchain.Anchor{Count: 3, Hash: entries[2].Hash}); err != nil {
+		t.Fatalf("log forked after the mark became unwritable: %v", err)
 	}
 }

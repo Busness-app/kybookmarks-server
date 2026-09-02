@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -230,16 +231,42 @@ func (l *Logger) recover() error {
 		return nil
 	}
 
-	if l.chain, err = auditchain.Resume(l.key, recordOf(entries[len(entries)-1], uint64(len(entries)))); err != nil {
-		return err
+	last := recordOf(entries[len(entries)-1], uint64(len(entries)))
+	anchor := l.anchor
+	overrun := l.anchor.Count > 0 && uint64(len(entries)) == l.anchor.Count+1
+
+	// Resume requires an anchor naming this exact record as the tail, so every case
+	// where ours does not has to be settled before the call rather than after it.
+	switch {
+	case overrun:
+		// An interrupted write leaves the mark one behind the log. Only a key holder
+		// can produce an entry that carries its own digest, so that entry is ours;
+		// catch up to it. Resume would reject a forged one on its own; asking here only
+		// buys the operator an error that names the overrun.
+		if err := auditchain.VerifyRecord(l.key, last); err != nil {
+			return fmt.Errorf("audit: log overruns its mark and the extra record does not verify: %w", err)
+		}
+		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
+	case uint64(len(entries)) < l.anchor.Count:
+		// Fewer records than the mark counted: the log was truncated. Resuming here
+		// would mint a sequence number that already exists — a fork that persists
+		// cleanly and can never verify again — so refuse to start rather than append
+		// over the evidence.
+		return fmt.Errorf("audit: %w: log holds %d records, the mark counted %d",
+			auditchain.ErrTruncated, len(entries), l.anchor.Count)
+	case l.stateMissing:
+		// The mark was removed from a log already in the shared format, so there is no
+		// anchor to resume against. Resume from the log's own tail, but leave l.anchor
+		// zero: appending has to keep working, and VerifyChain has to go on reporting
+		// the absent mark rather than being handed one this process invented.
+		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
 	}
 
-	// An interrupted write leaves the mark one behind the log. Only a key holder
-	// can produce an entry that carries its own digest, so that entry is ours;
-	// catch up to it. Never catch down to a shorter log, which is what truncation
-	// looks like and is reported by VerifyChain.
-	if uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {
-		l.anchor = l.chain.Anchor()
+	if l.chain, err = auditchain.Resume(l.key, last, anchor); err != nil {
+		return err
+	}
+	if overrun {
+		l.anchor = anchor
 		return l.saveState()
 	}
 	return nil
@@ -256,7 +283,10 @@ func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 	if len(entries) == 0 {
 		return entries, nil
 	}
-	if _, err := auditchain.Resume(l.key, recordOf(entries[len(entries)-1], uint64(len(entries)))); err == nil {
+	// Is this log already in the shared digest format? That is all this asks. Resume
+	// would also assert that the record is the tail, which is a different question and
+	// not the one converge needs answered.
+	if auditchain.VerifyRecord(l.key, recordOf(entries[len(entries)-1], uint64(len(entries)))) == nil {
 		return entries, nil
 	}
 
@@ -272,17 +302,20 @@ func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 		}
 	}
 
-	chain, err := auditchain.New(l.key)
+	// Replay, not a per-record Append: the log is written once after the loop and the
+	// anchor saved once after that, so a persist callback per record would have nothing
+	// to persist.
+	tuples := make([][]string, 0, len(entries))
+	for _, e := range entries {
+		tuples = append(tuples, fieldsOf(e))
+	}
+	records, anchor, err := auditchain.Replay(l.key, tuples)
 	if err != nil {
 		return nil, err
 	}
 	converted := make([]Entry, 0, len(entries))
-	for _, e := range entries {
-		rec, err := chain.Append(fieldsOf(e)...)
-		if err != nil {
-			return nil, err
-		}
-		e.PrevHash, e.Hash = rec.Prev, rec.Hash
+	for i, e := range entries {
+		e.PrevHash, e.Hash = records[i].Prev, records[i].Hash
 		converted = append(converted, e)
 	}
 
@@ -298,7 +331,7 @@ func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 		return nil, err
 	}
 
-	l.anchor = chain.Anchor()
+	l.anchor = anchor
 	if err := l.saveState(); err != nil {
 		return nil, err
 	}
@@ -327,8 +360,9 @@ func (l *Logger) legacyVersions(entries []Entry) ([]int, bool) {
 	return versions, true
 }
 
-// Log writes a new event to the audit trail.
-func (l *Logger) Log(action, userID, deviceID, ip, details string) (Entry, error) {
+// Log writes a new event to the audit trail. ctx bounds the wait for the chain lock,
+// so a hung store cannot leave every later caller blocked on it forever.
+func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details string) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -342,36 +376,50 @@ func (l *Logger) Log(action, userID, deviceID, ip, details string) (Entry, error
 		Details:   details,
 	}
 
-	rec, err := l.chain.Append(fieldsOf(entry)...)
+	var stateErr error
+	_, err := l.chain.Append(ctx, func(r auditchain.Record, a auditchain.Anchor) error {
+		entry.PrevHash, entry.Hash = r.Prev, r.Hash
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return err
+		}
+
+		// Entry first, state second. A crash between them leaves the mark one behind,
+		// which fails open for the newest entry only; the reverse order would raise a
+		// false truncation alarm on every interrupted write.
+		//
+		// Still two writes to two files. persist makes the chain advance only when both
+		// return nil, which is the part that was wrong before; it does not make them
+		// atomic. The one-ahead recovery in recover() is what covers the remaining
+		// window.
+		//
+		// stateMissing means this deployment deliberately has no anchor file. The record
+		// is still written and the chain still advances; returning an error here would
+		// stop the logger entirely.
+		//
+		// A failed mark write is reported to the caller, not to the chain. The record is
+		// already on disk, so refusing here would leave the chain a step behind the log
+		// and the next append would reuse this sequence -- forking it permanently. A mark
+		// left behind is just the interrupted write recover() reconciles.
+		if a.Count > l.anchor.Count && !l.stateMissing {
+			l.anchor = a
+			stateErr = l.saveState()
+		}
+		return nil
+	}, fieldsOf(entry)...)
 	if err != nil {
-		return entry, fmt.Errorf("failed to extend the audit chain: %w", err)
+		return entry, fmt.Errorf("failed to record the audit entry: %w", err)
 	}
-	entry.PrevHash, entry.Hash = rec.Prev, rec.Hash
-
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return entry, err
-	}
-
-	f, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return entry, err
-	}
-	defer f.Close()
-
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		return entry, err
-	}
-
-	// Entry first, state second. A crash between them leaves the mark one behind,
-	// which fails open for the newest entry only; the reverse order would raise a
-	// false truncation alarm on every interrupted write.
 	l.count++
-	if a := l.chain.Anchor(); a.Count > l.anchor.Count && !l.stateMissing {
-		l.anchor = a
-		return entry, l.saveState()
-	}
-	return entry, nil
+	return entry, stateErr
 }
 
 // chainHash is the single hash definition, shared by the write and verify paths so

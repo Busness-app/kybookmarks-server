@@ -59,7 +59,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("devices.pair_approved", acc.ID, "", clientIP(r), "approved device pairing PIN")
+	_, _ = s.audit.Log(r.Context(), "devices.pair_approved", acc.ID, "", clientIP(r), "approved device pairing PIN")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -107,7 +107,7 @@ func (s *Server) handlePairRedeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to start session", http.StatusInternalServerError)
 		return
 	}
-	_, _ = s.audit.Log("devices.paired", sess.UserID, dev.ID, clientIP(r), "completed device pairing for: "+dev.DeviceName)
+	_, _ = s.audit.Log(r.Context(), "devices.paired", sess.UserID, dev.ID, clientIP(r), "completed device pairing for: "+dev.DeviceName)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":               true,
@@ -140,6 +140,6 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("devices.revoked", acc.ID, deviceID, clientIP(r), "revoked trusted device")
+	_, _ = s.audit.Log(r.Context(), "devices.revoked", acc.ID, deviceID, clientIP(r), "revoked trusted device")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

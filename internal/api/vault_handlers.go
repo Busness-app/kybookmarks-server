@@ -22,7 +22,7 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("vault.sync", acc.ID, "", clientIP(r), "processed sync batch")
+	_, _ = s.audit.Log(r.Context(), "vault.sync", acc.ID, "", clientIP(r), "processed sync batch")
 	writeJSON(w, http.StatusOK, resp)
 }
 
