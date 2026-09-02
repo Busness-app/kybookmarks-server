@@ -40,14 +40,20 @@ func main() {
 		}
 	}
 
-	hmacSecret := os.Getenv("HMAC_SECRET")
-	if hmacSecret == "" {
-		hmacSecret = "kybookmarks-default-hmac-secret"
+	configDir := os.Getenv("CONFIG_DIR")
+	if configDir == "" {
+		configDir = "./config"
 	}
 
+	// HMAC_SECRET only verifies audit entries written before the chain was keyed.
+	// The live chain key comes from AUDIT_KEY or CONFIG_DIR/audit.key; see internal/audit.
+	legacyAuditSecret := os.Getenv("HMAC_SECRET")
+
+	// No default: an unset SYNC_SECRET disables the directory sync webhook rather
+	// than authenticating it with a value published in this repository.
 	syncSecret := os.Getenv("SYNC_SECRET")
 	if syncSecret == "" {
-		syncSecret = "kybookmarks-default-sync-secret"
+		log.Println("SYNC_SECRET is not set: /api/sync/events will reject all requests")
 	}
 
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -64,7 +70,7 @@ func main() {
 	deviceStore := devices.NewStore(dbStore)
 	ssoStore := sso.NewStore(filepath.Join(dataDir, "config"))
 
-	auditLogger, err := audit.NewLogger(filepath.Join(dataDir, "audit"), hmacSecret)
+	auditLogger, err := audit.NewLogger(filepath.Join(dataDir, "audit"), configDir, legacyAuditSecret)
 	if err != nil {
 		log.Fatalf("Failed to initialize audit logger: %v", err)
 	}
@@ -72,7 +78,6 @@ func main() {
 	cfg := api.Config{
 		WebDir:     webDir,
 		DataDir:    dataDir,
-		HMACSecret: hmacSecret,
 		SyncSecret: syncSecret,
 	}
 

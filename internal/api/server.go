@@ -29,7 +29,6 @@ const (
 type Config struct {
 	WebDir     string
 	DataDir    string
-	HMACSecret string
 	SyncSecret string
 }
 

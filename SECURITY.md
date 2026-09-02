@@ -34,6 +34,38 @@ This timeline assumes good-faith coordination. Patches are publicly available be
 
 We acknowledge security researchers and community members who help us improve. If you'd like credit in our release notes, please let us know your preferred name or handle when reporting.
 
+## Audit Chain Integrity
+
+The audit log at `DATA_DIR/audit/audit.log` is an HMAC-SHA256 hash chain. Its key is
+generated per install (32 bytes from `crypto/rand`, stored 0600 in `CONFIG_DIR`) or
+supplied via `AUDIT_KEY`. `CONFIG_DIR` must be a different volume from `DATA_DIR`, so that
+write access to the log does not imply access to the key.
+
+What this protects against, and what it does not:
+
+- **Someone who can write the log file** cannot edit, reorder, or delete records
+  undetected. Editing breaks the chain; deleting from the end is caught by a high-water
+  mark held outside the log directory.
+- **Someone who can write `CONFIG_DIR`** can forge the entire chain. The key is the trust
+  boundary; treat that directory exactly as you would a private key.
+- **The log is append-only by convention, not by the filesystem.** Chaining makes tampering
+  detectable after the fact. It does not prevent it. For stronger guarantees, ship entries
+  off-host or anchor the chain head somewhere the server cannot reach.
+
+Entries carry a version. `v: 0` records were written before this server keyed its chain,
+using a secret that was published in this repository, and are forgeable by anyone who read
+the source. They are retained and still verify, and a single keyed `audit.rekeyed` marker
+anchors the last of them so they cannot be rewritten after the upgrade. **Do not treat
+`v: 0` records as evidence.**
+
+## Directory Sync Webhook
+
+`POST /api/sync/events` replicates user create, update, and delete from KySignOn. It has no
+session authentication: the HMAC signature in `X-KySignOn-Signature`, keyed with
+`SYNC_SECRET`, is the only thing standing between the internet and the ability to create
+admin accounts. `SYNC_SECRET` has no default, and the endpoint rejects every request when
+it is unset or when a signature is absent or wrong.
+
 ## Known Limitations & Trust Boundaries
 
 KyPost is honest about what it does and does not protect. Read these carefully before deploying or relying on specific features.

@@ -9,14 +9,47 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 3. **Netscape Bookmark HTML Import & Export**: Standard browser bookmark file parsing and export supporting top-level merging and folder trees up to 5 levels.
 4. **KySignOn SSO & Account Replication**: Native OIDC PKCE single sign-on with automatic redirect URI resolution and signed directory sync webhook (`/api/sync/events`).
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
-6. **Tamper-Evident Audit Logging**: SHA-256 HMAC hash chained log trail with verification.
+6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
+
+## Audit chain
+
+`internal/audit` writes `DATA_DIR/audit/audit.log` and keeps its key and high-water mark
+in `CONFIG_DIR`. The two must be separate volumes: a key stored beside the log it protects
+proves nothing.
+
+| Variable | Meaning |
+|---|---|
+| `CONFIG_DIR` | Holds `audit.key` and `audit.state`. Defaults to `./config`. |
+| `AUDIT_KEY` | Optional. Hex, >= 32 bytes (`openssl rand -hex 32`). Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
+| `HMAC_SECRET` | **Legacy verification only.** Entries written before the chain was keyed are chained with this; it is never used to write. Leave it set to whatever the deployment used previously, or unset to fall back to the published constant those entries actually used. |
+| `SYNC_SECRET` | Signs the `/api/sync/events` directory webhook. **No default**: unset makes the endpoint reject every request. |
+
+Rules for anyone touching this package:
+
+- **No constant may ever key a written entry.** `legacyDefaultSecret` exists solely to
+  verify `v: 0` records and must stay out of the write path.
+- **Entries are versioned.** `v: 0` is the legacy public-key format; `v: 1` is keyed and
+  includes the version in the hashed payload. `chainHash` is the only hash definition, so
+  the write and verify paths cannot drift.
+- **The legacy tail is anchored** by a single keyed `audit.rekeyed` marker, written only on
+  a genuine first keying (state absent *and* every entry `v: 0`).
+- **Do not self-heal.** A missing `audit.state` alongside keyed entries is tampering: the
+  logger refuses to recreate it and `VerifyChain` reports it. The high-water mark never
+  decreases.
+- **Order writes: entry first, state second.** A crash between them under-counts by one,
+  which fails open for the newest entry only. The reverse order raises a false truncation
+  alarm on every interrupted write, and false alarms are how real alarms get ignored.
+
+`python3 scripts/ablate.py` re-runs the ablation suite: it breaks each defence in turn and
+fails if any test still passes. Run it after changing `internal/audit` or the sync webhook.
 
 ## Verification & Build Commands
 
 - **Backend Unit & Integration Tests**: `go test -v ./...`
 - **Frontend Production Build**: `cd frontend && npm run build`
 - **Docker Production Image**: `docker build -t kybookmarks-server:latest .`
+- **Audit Ablation Suite**: `python3 scripts/ablate.py`
 
 # Ponytail, lazy senior dev mode
 

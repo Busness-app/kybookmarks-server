@@ -33,14 +33,13 @@ func setupTestServer(t *testing.T) (*Server, http.Handler, func()) {
 	vm := vault.NewManager(dbStore)
 	ds := devices.NewStore(dbStore)
 	ss := sso.NewStore(filepath.Join(tmpDir, "config"))
-	al, err := audit.NewLogger(filepath.Join(tmpDir, "audit"), "test-secret")
+	al, err := audit.NewLogger(filepath.Join(tmpDir, "audit"), filepath.Join(tmpDir, "auditconf"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := Config{
 		DataDir:    tmpDir,
-		HMACSecret: "test-secret",
 		SyncSecret: "test-sync-secret",
 	}
 
