@@ -13,7 +13,7 @@ func TestAuditLogAndVerify(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	logger, err := NewLogger(tmpDir, "test-secret")
+	logger, err := NewLogger(filepath.Join(tmpDir, "log"), filepath.Join(tmpDir, "conf"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestAuditLogAndVerify(t *testing.T) {
 	}
 
 	// Test recovery after restart
-	logger2, err := NewLogger(tmpDir, "test-secret")
+	logger2, err := NewLogger(filepath.Join(tmpDir, "log"), filepath.Join(tmpDir, "conf"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestAuditLogAndVerify(t *testing.T) {
 	}
 
 	// Tamper test
-	logPath := filepath.Join(tmpDir, "audit.log")
+	logPath := filepath.Join(tmpDir, "log", "audit.log")
 	data, _ := os.ReadFile(logPath)
 	data[len(data)-10] ^= 0xFF // corrupt byte
 	_ = os.WriteFile(logPath, data, 0600)

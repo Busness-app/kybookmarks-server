@@ -223,16 +223,18 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Verify HMAC signature
-	sigHeader := r.Header.Get("X-KySignOn-Signature")
-	if s.cfg.SyncSecret != "" && sigHeader != "" {
-		mac := hmac.New(sha256.New, []byte(s.cfg.SyncSecret))
-		mac.Write(body)
-		expectedSig := hex.EncodeToString(mac.Sum(nil))
-		if !hmac.Equal([]byte(sigHeader), []byte(expectedSig)) {
-			http.Error(w, `{"error":"invalid_signature"}`, http.StatusUnauthorized)
-			return
-		}
+	// Verify HMAC signature. This endpoint has no other authentication, so an
+	// absent signature or an unconfigured secret must fail closed.
+	if s.cfg.SyncSecret == "" {
+		http.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)
+		return
+	}
+	mac := hmac.New(sha256.New, []byte(s.cfg.SyncSecret))
+	mac.Write(body)
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(r.Header.Get("X-KySignOn-Signature")), []byte(expectedSig)) {
+		http.Error(w, `{"error":"invalid_signature"}`, http.StatusUnauthorized)
+		return
 	}
 
 	var event struct {

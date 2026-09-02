@@ -20,12 +20,20 @@ services:
     environment:
       PORT: 5869
       DATA_DIR: /app/data
+      # The audit key lives here, on a separate volume from the log it protects.
+      CONFIG_DIR: /app/config
       WEB_DIR: /app/frontend/dist
-      HMAC_SECRET: ${HMAC_SECRET:-kybookmarks-default-hmac-secret}
-      SYNC_SECRET: ${SYNC_SECRET:-kybookmarks-default-sync-secret}
+      # Optional. Unset means the server generates a key into CONFIG_DIR on first run.
+      AUDIT_KEY: ${AUDIT_KEY:-}
+      # Only verifies audit entries written before the chain was keyed. Not a live secret.
+      HMAC_SECRET: ${HMAC_SECRET:-}
+      # No default: unset disables the /api/sync/events webhook rather than
+      # authenticating it with a value published in this repository.
+      SYNC_SECRET: ${SYNC_SECRET:-}
 
     volumes:
       - kybookmarks_data:/app/data
+      - kybookmarks_config:/app/config
 
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5869/api/health || exit 1"]
@@ -36,6 +44,7 @@ services:
 
 volumes:
   kybookmarks_data:
+  kybookmarks_config:
 
 networks:
   kypost-net:

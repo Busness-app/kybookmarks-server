@@ -31,12 +31,13 @@ RUN addgroup -S kybookmark && adduser -S kybookmark -G kybookmark
 COPY --from=backend-builder /kybookmarks-server /usr/local/bin/kybookmarks-server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-RUN mkdir -p /app/data && chown -R kybookmark:kybookmark /app/data
+RUN mkdir -p /app/data /app/config && chown -R kybookmark:kybookmark /app/data /app/config
 
 USER kybookmark
 
 ENV PORT=5869 \
     DATA_DIR=/app/data \
+    CONFIG_DIR=/app/config \
     WEB_DIR=/app/frontend/dist
 
 EXPOSE 5869
