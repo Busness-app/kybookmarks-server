@@ -157,7 +157,13 @@ func (s *Store) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_tombstones_exp ON tombstones(expires_at);
 	`
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Rows written before sso_subject became nullable collide on the UNIQUE
+	// index, which blocks creating any second unlinked account.
+	_, err := s.db.Exec(`UPDATE accounts SET sso_subject = NULL WHERE sso_subject = ''`)
 	return err
 }
 
@@ -191,10 +197,68 @@ func (s *Store) CreateAccount(a *Account) error {
 
 	_, err := s.db.Exec(query,
 		a.ID, strings.ToLower(a.Username), strings.ToLower(a.Email), a.DisplayName,
-		a.PasswordHash, a.AuthSalt, a.KDFIterations, a.Role, a.Status, a.SSOSubject,
+		a.PasswordHash, a.AuthSalt, a.KDFIterations, a.Role, a.Status, nullIfEmpty(a.SSOSubject),
 		a.PasswordKeyWrap, a.RecoveryKeyWrap, a.RecoveryVerifier, a.CreatedAt, a.UpdatedAt,
 	)
 	return err
+}
+
+// nullIfEmpty keeps unset sso_subject out of the UNIQUE index. Stored as "" it
+// collides with every other unlinked account, and GetAccountBySSOSubject("")
+// would match one of them.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// CreateFirstAdmin inserts a in one transaction with the check that no account
+// exists yet, so two concurrent /api/setup requests cannot both win.
+func (s *Store) CreateFirstAdmin(a *Account) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM accounts`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrAlreadyExists
+	}
+
+	if a.ID == "" {
+		a.ID = uuid.NewString()
+	}
+	now := time.Now().UTC()
+	a.CreatedAt = now
+	a.UpdatedAt = now
+	if a.KDFIterations == 0 {
+		a.KDFIterations = 600000
+	}
+	a.Role = "admin"
+	a.Status = "active"
+
+	query := `INSERT INTO accounts (
+		id, username, email, display_name, password_hash, auth_salt, kdf_iterations,
+		role, status, sso_subject, password_key_wrap, recovery_key_wrap, recovery_verifier,
+		created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	if _, err := tx.Exec(query,
+		a.ID, strings.ToLower(a.Username), strings.ToLower(a.Email), a.DisplayName,
+		a.PasswordHash, a.AuthSalt, a.KDFIterations, a.Role, a.Status, nullIfEmpty(a.SSOSubject),
+		a.PasswordKeyWrap, a.RecoveryKeyWrap, a.RecoveryVerifier, a.CreatedAt, a.UpdatedAt,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetAccountByID(id string) (*Account, error) {
@@ -255,6 +319,10 @@ func (s *Store) GetAccountByUsernameOrEmail(identifier string) (*Account, error)
 }
 
 func (s *Store) GetAccountBySSOSubject(sub string) (*Account, error) {
+	if sub == "" {
+		return nil, ErrNotFound
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -335,7 +403,7 @@ func (s *Store) UpdateAccount(a *Account) error {
 
 	_, err := s.db.Exec(query,
 		a.DisplayName, a.Role, a.Status, a.PasswordHash, a.AuthSalt, a.KDFIterations,
-		a.SSOSubject, a.PasswordKeyWrap, a.RecoveryKeyWrap, a.RecoveryVerifier, a.UpdatedAt, a.ID,
+		nullIfEmpty(a.SSOSubject), a.PasswordKeyWrap, a.RecoveryKeyWrap, a.RecoveryVerifier, a.UpdatedAt, a.ID,
 	)
 	return err
 }

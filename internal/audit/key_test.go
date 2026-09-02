@@ -97,7 +97,7 @@ func TestForgeryWithPublishedKeyIsRejected(t *testing.T) {
 	prev := entries[0].Hash
 	for i := 1; i < len(entries); i++ {
 		entries[i].PrevHash = prev
-		entries[i].Hash = forger.computeHash(entries[i])
+		entries[i].Hash = forger.legacyHash(entries[i], version1)
 		prev = entries[i].Hash
 	}
 
@@ -226,7 +226,7 @@ func writeLegacyLog(t *testing.T, root string, actions ...string) []Entry {
 			UserID:    "user-1",
 			PrevHash:  prev,
 		}
-		e.Hash = legacy.computeHash(e)
+		e.Hash = legacy.legacyHash(e, version0)
 		prev = e.Hash
 		b, _ := json.Marshal(e)
 		buf.Write(b)
@@ -239,9 +239,9 @@ func writeLegacyLog(t *testing.T, root string, actions ...string) []Entry {
 	return out
 }
 
-// Existing logs keep verifying, and a keyed marker anchors their tail so they cannot
-// be rewritten after the upgrade.
-func TestLegacyLogIsPreservedAndAnchored(t *testing.T) {
+// Existing logs keep verifying after conversion, with their events intact, and can
+// no longer be rewritten under the published key.
+func TestLegacyLogIsPreservedAndConverted(t *testing.T) {
 	root := t.TempDir()
 	legacy := writeLegacyLog(t, root, "auth.login", "admin.user_deleted")
 
@@ -252,41 +252,38 @@ func TestLegacyLogIsPreservedAndAnchored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != len(legacy)+1 {
-		t.Fatalf("got %d entries after migration, want %d", len(entries), len(legacy)+1)
+	if len(entries) != len(legacy) {
+		t.Fatalf("got %d entries after migration, want %d", len(entries), len(legacy))
 	}
-	marker := entries[len(entries)-1]
-	if marker.Action != actionRekeyed {
-		t.Fatalf("last entry is %q, want %q", marker.Action, actionRekeyed)
-	}
-	if marker.V != version1 {
-		t.Fatalf("marker version %d, want %d", marker.V, version1)
-	}
-	if marker.PrevHash != legacy[len(legacy)-1].Hash {
-		t.Fatal("marker does not anchor the legacy tail")
+	for i, e := range entries {
+		if e.Action != legacy[i].Action || e.ID != legacy[i].ID {
+			t.Fatalf("entry %d changed: %+v, want the original event", i, e)
+		}
+		if e.Hash == legacy[i].Hash {
+			t.Fatalf("entry %d still carries its pre-conversion digest", i)
+		}
 	}
 
-	// Restarting must not append a second marker.
+	// Restarting must not convert again or append anything.
 	restarted := newTestLogger(t, root)
 	again, _ := restarted.ReadEntries(0)
 	if len(again) != len(entries) {
-		t.Fatalf("restart appended %d extra entries", len(again)-len(entries))
+		t.Fatalf("restart changed the log by %d entries", len(again)-len(entries))
 	}
 	mustVerify(t, restarted, true, "after restart")
 
-	// Rewriting a legacy record with the published key must now break the marker.
-	forger := &Logger{legacyKey: []byte(legacyDefaultSecret)}
-	tampered := legacy[1]
+	// Rewriting a record with the published key must now be rejected.
+	forger := &Logger{key: []byte(legacyDefaultSecret), legacyKey: []byte(legacyDefaultSecret)}
+	tampered := entries[1]
 	tampered.Action = "auth.login"
-	tampered.Hash = forger.computeHash(tampered)
+	tampered.Hash = forger.legacyHash(tampered, version1)
 	b, _ := json.Marshal(tampered)
-	first, _ := json.Marshal(legacy[0])
-	markerJSON, _ := json.Marshal(marker)
-	out := string(first) + "\n" + string(b) + "\n" + string(markerJSON) + "\n"
+	first, _ := json.Marshal(entries[0])
+	out := string(first) + "\n" + string(b) + "\n"
 	if err := os.WriteFile(filepath.Join(root, "audit", logFile), []byte(out), 0600); err != nil {
 		t.Fatal(err)
 	}
-	mustVerify(t, restarted, false, "legacy record rewritten under the published key")
+	mustVerify(t, restarted, false, "record rewritten under the published key")
 }
 
 func TestAuditKeyEnvMustBeStrong(t *testing.T) {

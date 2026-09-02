@@ -65,14 +65,20 @@ func (s *Store) RequestPairing(userID, deviceName, deviceType string) (*store.Pa
 }
 
 // ApprovePairing is called by an already trusted device to grant vault key envelope.
-func (s *Store) ApprovePairing(pin, vaultKeyEnvelope string) error {
+// Approval is scoped to userID: a PIN only enrolls a device onto the account that
+// asked for it, never onto someone else's.
+func (s *Store) ApprovePairing(userID, pin, vaultKeyEnvelope string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if userID == "" {
+		return ErrInvalidPIN
+	}
+
 	now := time.Now().UTC()
 	query := `UPDATE pairing_sessions SET approved = 1, vault_key_envelope = ?
-		WHERE pin = ? AND expires_at > ? AND approved = 0`
-	res, err := s.db.Exec(query, vaultKeyEnvelope, pin, now)
+		WHERE pin = ? AND user_id = ? AND expires_at > ? AND approved = 0`
+	res, err := s.db.Exec(query, vaultKeyEnvelope, pin, userID, now)
 	if err != nil {
 		return err
 	}

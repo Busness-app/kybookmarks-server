@@ -155,13 +155,18 @@ func TestE2EAPIWorkflows(t *testing.T) {
 
 	// 7. Device pairing workflow
 	pairReqPayload, _ := json.Marshal(map[string]string{
-		"userId":     "admin",
 		"deviceName": "Chrome Browser Extension",
 		"deviceType": "browser_chrome",
 	})
 	req = httptest.NewRequest(http.MethodPost, "/api/devices/pair/request", bytes.NewReader(pairReqPayload))
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pair request failed: %d - %s", w.Code, w.Body.String())
+	}
 	var pairSess store.PairingSession
 	_ = json.Unmarshal(w.Body.Bytes(), &pairSess)
 	if len(pairSess.PIN) != 6 {

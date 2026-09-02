@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/auditchain"
+
 	"github.com/google/uuid"
 )
 
@@ -40,7 +42,6 @@ const (
 
 // Entry represents a single audit event with cryptographic hash chaining.
 type Entry struct {
-	V         int       `json:"v,omitempty"`
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
 	Action    string    `json:"action"`
@@ -59,18 +60,40 @@ type state struct {
 	Hash  string `json:"hash"`
 }
 
-// Logger persists and verifies audit entries with HMAC-SHA256 hash chaining.
+// fieldsOf is the entry content the chain authenticates. The order is part of the
+// chain format: changing it invalidates every stored digest.
+func fieldsOf(e Entry) []string {
+	return []string{
+		e.ID,
+		e.Timestamp.UTC().Format(time.RFC3339Nano),
+		e.Action,
+		e.UserID,
+		e.DeviceID,
+		e.IP,
+		e.Details,
+	}
+}
+
+// recordOf reads a stored entry as a chain record. Entries carry no sequence of
+// their own; position in the log is the sequence.
+func recordOf(e Entry, seq uint64) auditchain.Record {
+	return auditchain.Record{Seq: seq, Prev: e.PrevHash, Hash: e.Hash, Fields: fieldsOf(e)}
+}
+
+// Logger persists and verifies audit entries with the suite's shared chain.
 type Logger struct {
 	mu        sync.Mutex
 	filePath  string
 	statePath string
 	key       []byte
 	legacyKey []byte
-	lastHash  string
+	chain     *auditchain.Chain
+	anchor    auditchain.Anchor
 	count     int
 
-	// stateMissing records that the high-water mark was absent while keyed entries
-	// existed. Recreating it would let an append after a truncation erase the evidence.
+	// stateMissing records that the high-water mark was absent while an already
+	// converted log existed. Recreating it would let an append after a truncation
+	// erase the evidence.
 	stateMissing bool
 }
 
@@ -98,7 +121,6 @@ func NewLogger(dataDir, configDir, legacySecret string) (*Logger, error) {
 		statePath: filepath.Join(configDir, stateFile),
 		key:       key,
 		legacyKey: []byte(legacySecret),
-		lastHash:  genesisHash,
 	}
 
 	if err := l.recover(); err != nil {
@@ -175,44 +197,133 @@ func (l *Logger) recover() error {
 	if err != nil {
 		return fmt.Errorf("failed to read audit log: %w", err)
 	}
-	if len(entries) > 0 {
-		l.lastHash = entries[len(entries)-1].Hash
-	}
 
 	st, err := l.loadState()
 	if err != nil {
 		return err
 	}
 	if st != nil {
-		// An interrupted write leaves the mark one behind the log. Those entries are
-		// really on disk, so catch up to them; never catch down to a shorter log,
-		// which is what truncation looks like and is reported by VerifyChain.
-		l.count = st.Count
-		if len(entries) > l.count {
-			l.count = len(entries)
-		}
-		return nil
+		l.anchor = auditchain.Anchor{Count: uint64(st.Count), Hash: st.Hash}
 	}
 
-	// No state file. That is either a first run under the new scheme, or someone
-	// removed it. Only the former can be true when every entry is unkeyed.
-	for _, e := range entries {
-		if e.V != version0 {
-			// Leave state absent; VerifyChain reports it rather than papering over it.
-			l.count = len(entries)
-			l.stateMissing = true
-			return nil
-		}
+	if entries, err = l.converge(entries, st); err != nil {
+		return err
 	}
-
 	l.count = len(entries)
-	if len(entries) > 0 {
-		if _, err := l.Log(actionRekeyed, "", "", "", "audit chain re-keyed; entries above this marker are legacy"); err != nil {
-			return fmt.Errorf("failed to anchor legacy audit chain: %w", err)
+
+	// No state file, and nothing was converted: the log was already in the shared
+	// format, so the mark was removed rather than never written. Leave it absent;
+	// VerifyChain reports it rather than papering over it.
+	if st == nil && len(entries) > 0 && l.anchor.Count == 0 {
+		l.stateMissing = true
+	}
+
+	if len(entries) == 0 {
+		l.chain, err = auditchain.New(l.key)
+		if err != nil {
+			return err
+		}
+		if st == nil {
+			return l.saveState()
 		}
 		return nil
 	}
-	return l.saveState()
+
+	if l.chain, err = auditchain.Resume(l.key, recordOf(entries[len(entries)-1], uint64(len(entries)))); err != nil {
+		return err
+	}
+
+	// An interrupted write leaves the mark one behind the log. Only a key holder
+	// can produce an entry that carries its own digest, so that entry is ours;
+	// catch up to it. Never catch down to a shorter log, which is what truncation
+	// looks like and is reported by VerifyChain.
+	if uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {
+		l.anchor = l.chain.Anchor()
+		return l.saveState()
+	}
+	return nil
+}
+
+// converge rewrites a log written under this server's own hashing onto the shared
+// package's digests. It runs once, when the log does not already carry them.
+//
+// Every entry must first verify under whichever digest wrote it, so a log that was
+// already broken is never blessed. A missing state file is only innocent when every
+// entry is unkeyed — a first run under the new scheme. With keyed entries present it
+// means the mark was removed, so nothing is converted and VerifyChain reports it.
+func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
+	if len(entries) == 0 {
+		return entries, nil
+	}
+	if _, err := auditchain.Resume(l.key, recordOf(entries[len(entries)-1], uint64(len(entries)))); err == nil {
+		return entries, nil
+	}
+
+	versions, ok := l.legacyVersions(entries)
+	if !ok {
+		return entries, nil
+	}
+	if st == nil {
+		for _, v := range versions {
+			if v != version0 {
+				return entries, nil
+			}
+		}
+	}
+
+	chain, err := auditchain.New(l.key)
+	if err != nil {
+		return nil, err
+	}
+	converted := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		rec, err := chain.Append(fieldsOf(e)...)
+		if err != nil {
+			return nil, err
+		}
+		e.PrevHash, e.Hash = rec.Prev, rec.Hash
+		converted = append(converted, e)
+	}
+
+	var buf []byte
+	for _, e := range converted {
+		data, err := json.Marshal(e)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(append(buf, data...), '\n')
+	}
+	if err := writeFileAtomic(l.filePath, buf); err != nil {
+		return nil, err
+	}
+
+	l.anchor = chain.Anchor()
+	if err := l.saveState(); err != nil {
+		return nil, err
+	}
+	return converted, nil
+}
+
+// legacyVersions reports the format each entry was written under, or false if any
+// entry does not match either.
+func (l *Logger) legacyVersions(entries []Entry) ([]int, bool) {
+	versions := make([]int, 0, len(entries))
+	prev := genesisHash
+	for _, e := range entries {
+		if e.PrevHash != prev {
+			return nil, false
+		}
+		switch e.Hash {
+		case l.legacyHash(e, version1):
+			versions = append(versions, version1)
+		case l.legacyHash(e, version0):
+			versions = append(versions, version0)
+		default:
+			return nil, false
+		}
+		prev = e.Hash
+	}
+	return versions, true
 }
 
 // Log writes a new event to the audit trail.
@@ -221,7 +332,6 @@ func (l *Logger) Log(action, userID, deviceID, ip, details string) (Entry, error
 	defer l.mu.Unlock()
 
 	entry := Entry{
-		V:         version1,
 		ID:        uuid.NewString(),
 		Timestamp: time.Now().UTC(),
 		Action:    action,
@@ -229,9 +339,13 @@ func (l *Logger) Log(action, userID, deviceID, ip, details string) (Entry, error
 		DeviceID:  deviceID,
 		IP:        ip,
 		Details:   details,
-		PrevHash:  l.lastHash,
 	}
-	entry.Hash = l.computeHash(entry)
+
+	rec, err := l.chain.Append(fieldsOf(entry)...)
+	if err != nil {
+		return entry, fmt.Errorf("failed to extend the audit chain: %w", err)
+	}
+	entry.PrevHash, entry.Hash = rec.Prev, rec.Hash
 
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -251,9 +365,12 @@ func (l *Logger) Log(action, userID, deviceID, ip, details string) (Entry, error
 	// Entry first, state second. A crash between them leaves the mark one behind,
 	// which fails open for the newest entry only; the reverse order would raise a
 	// false truncation alarm on every interrupted write.
-	l.lastHash = entry.Hash
 	l.count++
-	return entry, l.saveState()
+	if a := l.chain.Anchor(); a.Count > l.anchor.Count && !l.stateMissing {
+		l.anchor = a
+		return entry, l.saveState()
+	}
+	return entry, nil
 }
 
 // chainHash is the single hash definition, shared by the write and verify paths so
@@ -264,12 +381,18 @@ func chainHash(key []byte, payload string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (l *Logger) computeHash(e Entry) string {
+// legacyHash is the digest this server used before the chain moved to the shared
+// format. Both variants joined the fields with a bare "|", so content carrying the
+// delimiter could be shifted into a neighbouring field without changing the digest.
+//
+// Deprecated: retained only to recognise entries written that way. New entries are
+// written by auditchain.
+func (l *Logger) legacyHash(e Entry, version int) string {
 	fields := []any{e.ID, e.Timestamp.Format(time.RFC3339Nano), e.Action, e.UserID, e.DeviceID, e.IP, e.Details, e.PrevHash}
-	if e.V == version0 {
+	if version == version0 {
 		return chainHash(l.legacyKey, fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", fields...))
 	}
-	return chainHash(l.key, fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%s", append([]any{e.V}, fields...)...))
+	return chainHash(l.key, fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%s", append([]any{version}, fields...)...))
 }
 
 func (l *Logger) loadState() (*state, error) {
@@ -297,10 +420,10 @@ func (l *Logger) saveState() error {
 	if err != nil {
 		return err
 	}
-	if st != nil && st.Count > l.count {
+	if st != nil && uint64(st.Count) > l.anchor.Count {
 		return nil
 	}
-	data, err := json.Marshal(state{Count: l.count, Hash: l.lastHash})
+	data, err := json.Marshal(state{Count: int(l.anchor.Count), Hash: l.anchor.Hash})
 	if err != nil {
 		return err
 	}
@@ -334,7 +457,11 @@ func writeFileAtomic(path string, data []byte) error {
 func (l *Logger) ReadEntries(limit int) ([]Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.readEntries(limit)
+}
 
+// readEntries is ReadEntries without the lock, for callers that already hold it.
+func (l *Logger) readEntries(limit int) ([]Entry, error) {
 	data, err := os.ReadFile(l.filePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return []Entry{}, nil
@@ -360,40 +487,24 @@ func (l *Logger) ReadEntries(limit int) ([]Entry, error) {
 	return entries, nil
 }
 
-// VerifyChain checks the integrity of the audit chain.
+// VerifyChain checks the integrity of the audit chain against the recorded anchor.
 func (l *Logger) VerifyChain() (bool, int, error) {
-	// State first, log second: the inverse of Log's write order. Reading the log
-	// first lets a concurrent append make the mark outrun the entries we sampled,
-	// reporting truncation on a healthy chain.
-	st, err := l.loadState()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entries, err := l.readEntries(0)
 	if err != nil {
 		return false, 0, err
 	}
 
-	entries, err := l.ReadEntries(0)
-	if err != nil {
-		return false, 0, err
-	}
-	switch {
-	case st == nil && len(entries) > 0:
-		return false, 0, errors.New("audit state is missing: the chain cannot be checked for truncation")
-	case st != nil && len(entries) < st.Count:
-		return false, len(entries), fmt.Errorf("audit log truncated: %d entries present, %d recorded", len(entries), st.Count)
-	case st != nil && st.Count > 0 && entries[st.Count-1].Hash != st.Hash:
-		return false, st.Count - 1, fmt.Errorf("audit log diverges from recorded state at entry %d", st.Count-1)
-	}
-
-	expectedPrev := genesisHash
+	records := make([]auditchain.Record, 0, len(entries))
 	for i, e := range entries {
-		if e.PrevHash != expectedPrev {
-			return false, i, fmt.Errorf("hash chain broken at entry %d (%s): prevHash mismatch", i, e.ID)
-		}
-		if l.computeHash(e) != e.Hash {
-			return false, i, fmt.Errorf("hash chain broken at entry %d (%s): hash mismatch", i, e.ID)
-		}
-		expectedPrev = e.Hash
+		records = append(records, recordOf(e, uint64(i+1)))
 	}
 
+	if err := auditchain.Verify(l.key, records, l.anchor); err != nil {
+		return false, len(entries), err
+	}
 	return true, len(entries), nil
 }
 

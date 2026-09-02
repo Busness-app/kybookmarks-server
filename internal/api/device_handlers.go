@@ -9,8 +9,11 @@ import (
 )
 
 func (s *Server) handlePairRequest(w http.ResponseWriter, r *http.Request) {
+	acc, _ := s.currentUser(r)
+
+	// The account is taken from the session, never from the body: the response
+	// carries the PIN and pairing token, which enroll a device onto that account.
 	var req struct {
-		UserID     string `json:"userId"`
 		DeviceName string `json:"deviceName"`
 		DeviceType string `json:"deviceType"`
 	}
@@ -26,7 +29,7 @@ func (s *Server) handlePairRequest(w http.ResponseWriter, r *http.Request) {
 		req.DeviceType = "browser_chrome"
 	}
 
-	sess, err := s.devices.RequestPairing(req.UserID, req.DeviceName, req.DeviceType)
+	sess, err := s.devices.RequestPairing(acc.ID, req.DeviceName, req.DeviceType)
 	if err != nil {
 		http.Error(w, "failed to request pairing: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -47,7 +50,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.devices.ApprovePairing(req.PIN, req.VaultKeyEnvelope); err != nil {
+	if err := s.devices.ApprovePairing(acc.ID, req.PIN, req.VaultKeyEnvelope); err != nil {
 		if err == devices.ErrInvalidPIN {
 			http.Error(w, `{"error":"invalid_or_expired_pin"}`, http.StatusBadRequest)
 			return
@@ -84,7 +87,8 @@ func (s *Server) handlePairRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Register device in store
+	// Register device in store. A session must never outlive a failed enrolment,
+	// so both steps fail closed.
 	dev := &store.Device{
 		UserID:      sess.UserID,
 		DeviceName:  sess.DeviceName,
@@ -92,10 +96,17 @@ func (s *Server) handlePairRedeem(w http.ResponseWriter, r *http.Request) {
 		PublicKey:   req.PublicKey,
 		KeyEnvelope: sess.VaultKeyEnvelope,
 	}
-	_ = s.store.CreateDevice(dev)
+	if err := s.store.CreateDevice(dev); err != nil {
+		http.Error(w, "failed to register device", http.StatusInternalServerError)
+		return
+	}
 
 	// Create session for the newly paired device
-	token, _ := s.startSession(w, r, sess.UserID, dev.ID)
+	token, err := s.startSession(w, r, sess.UserID, dev.ID)
+	if err != nil {
+		http.Error(w, "failed to start session", http.StatusInternalServerError)
+		return
+	}
 	_, _ = s.audit.Log("devices.paired", sess.UserID, dev.ID, clientIP(r), "completed device pairing for: "+dev.DeviceName)
 
 	writeJSON(w, http.StatusOK, map[string]any{

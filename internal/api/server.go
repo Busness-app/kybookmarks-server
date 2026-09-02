@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,7 @@ const (
 type Config struct {
 	WebDir     string
 	DataDir    string
+	ConfigDir  string
 	SyncSecret string
 }
 
@@ -42,6 +44,33 @@ type Server struct {
 
 	loginAttemptsMu sync.Mutex
 	loginAttempts   map[string]*loginAttemptTracker
+
+	// saltKey derives the decoy login salt served for unknown usernames.
+	saltKey []byte
+}
+
+// loadOrCreateSaltKey keeps the decoy salt stable across restarts, so an
+// attacker cannot spot unknown usernames by watching their salt change.
+func loadOrCreateSaltKey(configDir string) []byte {
+	path := filepath.Join(configDir, "enum.key")
+	if raw, err := os.ReadFile(path); err == nil {
+		if key, err := hex.DecodeString(strings.TrimSpace(string(raw))); err == nil && len(key) >= 32 {
+			return key
+		}
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		// Without randomness we cannot serve a decoy salt safely; a fresh random
+		// key each restart is still better than a published constant.
+		panic("kybookmarks: no entropy available: " + err.Error())
+	}
+	if configDir != "" {
+		if err := os.MkdirAll(configDir, 0o700); err == nil {
+			_ = os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600)
+		}
+	}
+	return key
 }
 
 type loginAttemptTracker struct {
@@ -58,6 +87,7 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		audit:         al,
 		cfg:           cfg,
 		loginAttempts: make(map[string]*loginAttemptTracker),
+		saltKey:       loadOrCreateSaltKey(cfg.ConfigDir),
 	}
 }
 
@@ -110,7 +140,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/vault/history", s.withAuth(s.handleGetHistory))
 
 	// Device Pairing (Public & Authenticated)
-	mux.HandleFunc("POST /api/devices/pair/request", s.handlePairRequest)
+	mux.HandleFunc("POST /api/devices/pair/request", s.withAuth(s.handlePairRequest))
 	mux.HandleFunc("POST /api/devices/pair/redeem", s.handlePairRedeem)
 	mux.HandleFunc("POST /api/devices/pair/approve", s.withAuth(s.handlePairApprove))
 	mux.HandleFunc("GET /api/devices", s.withAuth(s.handleListDevices))
@@ -173,7 +203,7 @@ const userContextKey = contextKey("user")
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := s.currentUser(r)
+		_, sess, ok := s.currentSession(r)
 		if !ok {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
@@ -181,7 +211,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// CSRF protection for state-changing browser requests
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
-			if !s.validateCSRF(r) {
+			if !s.validateCSRF(r, sess) {
 				http.Error(w, `{"error":"invalid_csrf_token"}`, http.StatusForbidden)
 				return
 			}
@@ -193,7 +223,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, ok := s.currentUser(r)
+		user, sess, ok := s.currentSession(r)
 		if !ok {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
@@ -204,7 +234,7 @@ func (s *Server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
-			if !s.validateCSRF(r) {
+			if !s.validateCSRF(r, sess) {
 				http.Error(w, `{"error":"invalid_csrf_token"}`, http.StatusForbidden)
 				return
 			}
@@ -215,6 +245,11 @@ func (s *Server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) currentUser(r *http.Request) (*store.Account, bool) {
+	acc, _, ok := s.currentSession(r)
+	return acc, ok
+}
+
+func (s *Server) currentSession(r *http.Request) (*store.Account, *store.Session, bool) {
 	token := ""
 	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
 		token = cookie.Value
@@ -223,36 +258,38 @@ func (s *Server) currentUser(r *http.Request) (*store.Account, bool) {
 	}
 
 	if token == "" {
-		return nil, false
+		return nil, nil, false
 	}
 
 	tokenHash := hashToken(token)
 	sess, err := s.store.GetSession(tokenHash)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 
 	acc, err := s.store.GetAccountByID(sess.UserID)
 	if err != nil || acc.Status != "active" {
-		return nil, false
+		return nil, nil, false
 	}
 
-	return acc, true
+	return acc, sess, true
 }
 
-func (s *Server) validateCSRF(r *http.Request) bool {
+func (s *Server) validateCSRF(r *http.Request, sess *store.Session) bool {
 	// Bearer tokens (used by native apps/extensions) are immune to CSRF
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		return true
 	}
 
-	cookie, err := r.Cookie(csrfCookieName)
-	if err != nil || cookie.Value == "" {
+	// Compare against the token minted with this session, not against the cookie
+	// echoed back. Anything able to plant a csrf_token cookie -- a sibling
+	// subdomain, say -- can satisfy a cookie-versus-header check on its own.
+	if sess == nil || sess.CSRFToken == "" {
 		return false
 	}
 
 	headerToken := r.Header.Get("X-CSRF-Token")
-	return headerToken != "" && hmac.Equal([]byte(headerToken), []byte(cookie.Value))
+	return headerToken != "" && hmac.Equal([]byte(headerToken), []byte(sess.CSRFToken))
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID, deviceID string) (string, error) {
