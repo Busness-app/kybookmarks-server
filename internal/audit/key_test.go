@@ -195,8 +195,9 @@ func TestHighWaterMarkNeverDrops(t *testing.T) {
 		mustLog(t, l, a)
 	}
 
+	// saveState writes the anchor, so lowering count alone would exercise nothing.
 	stale := newTestLogger(t, root)
-	stale.count = 1
+	stale.anchor = auditchain.Anchor{Count: 1, Hash: stale.anchor.Hash}
 	if err := stale.saveState(); err != nil {
 		t.Fatal(err)
 	}
@@ -409,5 +410,64 @@ func TestExportedChainVerifiesWithSharedPackageAlone(t *testing.T) {
 	}
 	if err := auditchain.Verify(l.key, recs, anchor); err != nil {
 		t.Fatalf("exported chain does not verify: %v", err)
+	}
+}
+
+// Conversion rewrites the log in place and stamps a fresh anchor, so it must run
+// only on a log that verifies under one of the digests that could have written it.
+// A log verifying under neither has been tampered with, and blessing it would erase
+// the evidence.
+func TestConvergeRefusesAnUnverifiableLog(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+	mustLog(t, l, "admin.user_deleted")
+	mustVerify(t, l, true, "before tampering")
+
+	logPath := filepath.Join(root, "audit", logFile)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []Entry
+	for _, line := range splitLines(data) {
+		var e Entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, e)
+	}
+
+	// A digest belonging to no scheme: not the shared one, not either legacy one.
+	entries[len(entries)-1].Details = "tampered"
+	entries[len(entries)-1].Hash = strings.Repeat("ab", 32)
+
+	var buf bytes.Buffer
+	for _, e := range entries {
+		b, _ := json.Marshal(e)
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(logPath, buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tampered, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening must not convert it. Refusing to open at all is an acceptable
+	// outcome; quietly rewriting it is not.
+	reopened, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if err == nil {
+		mustVerify(t, reopened, false, "after tampering with an entry digest")
+	}
+
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(tampered, after) {
+		t.Fatal("conversion rewrote a log that verified under no known digest")
 	}
 }
