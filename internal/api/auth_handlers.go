@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"kybookmarks-server/internal/crypto"
-	"kybookmarks-server/internal/sso"
-	"kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/crypto"
+	"github.com/Busness-app/kybookmarks-server/internal/sso"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
 )
 
 type LoginRequest struct {

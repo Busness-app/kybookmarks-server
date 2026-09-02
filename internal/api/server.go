@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"kybookmarks-server/internal/audit"
-	"kybookmarks-server/internal/crypto"
-	"kybookmarks-server/internal/devices"
-	"kybookmarks-server/internal/sso"
-	"kybookmarks-server/internal/store"
-	"kybookmarks-server/internal/vault"
+	"github.com/Busness-app/kybookmarks-server/internal/audit"
+	"github.com/Busness-app/kybookmarks-server/internal/crypto"
+	"github.com/Busness-app/kybookmarks-server/internal/devices"
+	"github.com/Busness-app/kybookmarks-server/internal/sso"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/vault"
 )
 
 const (
@@ -46,7 +46,7 @@ type Server struct {
 }
 
 type loginAttemptTracker struct {
-	count    int
+	count        int
 	blockedUntil time.Time
 }
 

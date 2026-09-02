@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
 )
 
 func TestDevicePairingFlow(t *testing.T) {

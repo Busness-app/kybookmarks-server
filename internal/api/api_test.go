@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"kybookmarks-server/internal/audit"
-	"kybookmarks-server/internal/devices"
-	"kybookmarks-server/internal/sso"
-	"kybookmarks-server/internal/store"
-	"kybookmarks-server/internal/vault"
+	"github.com/Busness-app/kybookmarks-server/internal/audit"
+	"github.com/Busness-app/kybookmarks-server/internal/devices"
+	"github.com/Busness-app/kybookmarks-server/internal/sso"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/vault"
 )
 
 func setupTestServer(t *testing.T) (*Server, http.Handler, func()) {
@@ -203,7 +203,10 @@ func TestE2EAPIWorkflows(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("audit verify failed: %d - %s", w.Code, w.Body.String())
 	}
-	var auditResp struct{ Valid bool; Count int }
+	var auditResp struct {
+		Valid bool
+		Count int
+	}
 	_ = json.Unmarshal(w.Body.Bytes(), &auditResp)
 	if !auditResp.Valid || auditResp.Count == 0 {
 		t.Fatalf("audit verify failed: %+v", auditResp)
