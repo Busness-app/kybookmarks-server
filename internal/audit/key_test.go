@@ -296,3 +296,90 @@ func TestAuditKeyEnvMustBeStrong(t *testing.T) {
 		t.Fatal("NewLogger accepted a short AUDIT_KEY")
 	}
 }
+
+// A crash between the entry write and the state write leaves the mark one behind.
+// The next start must reconcile to the log, not stay behind it forever.
+func TestStateCatchesUpAfterInterruptedWrite(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the crash: the third entry is on disk, the mark still says two.
+	behind, _ := json.Marshal(state{Count: 2, Hash: entries[1].Hash})
+	statePath := filepath.Join(root, "config", stateFile)
+	if err := os.WriteFile(statePath, behind, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newTestLogger(t, root)
+	mustVerify(t, restarted, true, "restart after an interrupted write")
+
+	mustLog(t, restarted, "auth.login")
+	mustVerify(t, restarted, true, "append after an interrupted write")
+
+	st, err := restarted.loadState()
+	if err != nil || st == nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	if st.Count != 4 {
+		t.Fatalf("mark stuck at %d after catching up, want 4", st.Count)
+	}
+}
+
+// Verification must not report truncation just because a write landed mid-check.
+func TestVerifyChainIsNotRacedByConcurrentAppends(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			if _, err := l.Log("auth.login", "u", "d", "127.0.0.1", "x"); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		if valid, _, err := l.VerifyChain(); !valid {
+			t.Fatalf("VerifyChain reported an invalid chain during concurrent appends: %v", err)
+		}
+	}
+	<-done
+}
+
+// A truncate-in-place rewrite lets a concurrent verifier read a half-written state
+// file. Replacement by rename is observable as a different file identity.
+func TestStateIsReplacedNotRewrittenInPlace(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+
+	path := filepath.Join(root, "config", stateFile)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustLog(t, l, "auth.logout")
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("audit state was rewritten in place; a concurrent verifier can observe it empty")
+	}
+	if after.Mode().Perm() != 0600 {
+		t.Errorf("replaced audit state has mode %v, want 0600", after.Mode().Perm())
+	}
+}

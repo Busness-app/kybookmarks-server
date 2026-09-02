@@ -135,7 +135,23 @@ func loadOrCreateKey(configDir string) ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("failed to generate audit key: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0600); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if errors.Is(err, os.ErrExist) {
+		// Another process got there first. Its key is authoritative.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read audit key: %w", err)
+		}
+		return decodeKey(strings.TrimSpace(string(data)))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to persist audit key: %w", err)
+	}
+	if _, err := f.WriteString(hex.EncodeToString(key)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("failed to persist audit key: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("failed to persist audit key: %w", err)
 	}
 	return key, nil
@@ -168,7 +184,13 @@ func (l *Logger) recover() error {
 		return err
 	}
 	if st != nil {
+		// An interrupted write leaves the mark one behind the log. Those entries are
+		// really on disk, so catch up to them; never catch down to a shorter log,
+		// which is what truncation looks like and is reported by VerifyChain.
 		l.count = st.Count
+		if len(entries) > l.count {
+			l.count = len(entries)
+		}
 		return nil
 	}
 
@@ -282,7 +304,30 @@ func (l *Logger) saveState() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(l.statePath, data, 0600)
+	return writeFileAtomic(l.statePath, data)
+}
+
+// writeFileAtomic replaces path in one step. os.WriteFile truncates first, so a
+// verifier reading concurrently can observe an empty file and cry truncation.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // ReadEntries returns audit entries up to limit (0 = all).
@@ -317,12 +362,15 @@ func (l *Logger) ReadEntries(limit int) ([]Entry, error) {
 
 // VerifyChain checks the integrity of the audit chain.
 func (l *Logger) VerifyChain() (bool, int, error) {
-	entries, err := l.ReadEntries(0)
+	// State first, log second: the inverse of Log's write order. Reading the log
+	// first lets a concurrent append make the mark outrun the entries we sampled,
+	// reporting truncation on a healthy chain.
+	st, err := l.loadState()
 	if err != nil {
 		return false, 0, err
 	}
 
-	st, err := l.loadState()
+	entries, err := l.ReadEntries(0)
 	if err != nil {
 		return false, 0, err
 	}

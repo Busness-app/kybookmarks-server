@@ -31,6 +31,13 @@ ABLATIONS = [
  ("state recreated by append", AUDIT, "TestMissingState",
   "\tif l.stateMissing {\n\t\treturn nil\n\t}\n", ""),
 
+ ("mark never catches up after an interrupted write", AUDIT, "TestStateCatchesUp|TestTruncation",
+  "\t\tl.count = st.Count\n\t\tif len(entries) > l.count {\n\t\t\tl.count = len(entries)\n\t\t}",
+  "\t\tl.count = st.Count"),
+
+ ("non-atomic state write", AUDIT, "TestStateIsReplaced|TestVerifyChainIsNotRaced",
+  "\treturn writeFileAtomic(l.statePath, data)", "\treturn os.WriteFile(l.statePath, data, 0600)"),
+
  ("no legacy anchor marker", AUDIT, "TestLegacyLog",
   '\t\tif _, err := l.Log(actionRekeyed, "", "", "", "audit chain re-keyed; entries above this marker are legacy"); err != nil {\n\t\t\treturn fmt.Errorf("failed to anchor legacy audit chain: %w", err)\n\t\t}\n\t\treturn nil',
   "\t\treturn l.saveState()"),
