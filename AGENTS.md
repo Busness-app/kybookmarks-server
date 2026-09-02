@@ -62,7 +62,11 @@ Rules for anyone touching this package:
   record past the mark is verified against the key and against its predecessor, then the
   mark advances to the log's tail — a config volume that was briefly unwritable recovers.
   A log *shorter* than the mark is truncation: `NewLogger` returns `ErrTruncated` and
-  `cmd/server` exits, naming both files. This is a boot failure, not a warning.
+  `cmd/server` exits, naming both files. This is a boot failure, not a warning. The check
+  runs **above** the empty-log short-circuit, so a log emptied to zero bytes, filled with
+  junk, or deleted outright is refused too — those read as no entries at all, which is the
+  most truncated a log can be, and they must not get a gentler answer than a log truncated
+  to one record.
 
 `python3 scripts/ablate.py` re-runs the ablation suite: it breaks each defence in turn and
 fails if any test still passes. Run it after changing `internal/audit` or the sync webhook.

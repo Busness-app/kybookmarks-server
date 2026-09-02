@@ -228,6 +228,24 @@ func (l *Logger) recover() error {
 		l.stateMissing = true
 	}
 
+	// Above the empty-log short-circuit, deliberately. A log emptied to zero bytes, one
+	// whose lines no longer decode, and one deleted outright all read as no entries at
+	// all -- the most truncated a log can be. Short-circuiting past this check answered
+	// the worst case with a fresh chain that accepted appends, while a log truncated to a
+	// single record was refused. Deleting the file and emptying it are the same act with
+	// the same effect, so they get the same answer.
+	//
+	// Resuming here would mint sequence numbers that already exist -- a fork that persists
+	// cleanly and can never verify again -- so refuse to start rather than append over the
+	// evidence.
+	if uint64(len(entries)) < l.anchor.Count {
+		return fmt.Errorf("audit: %w: %s holds %d records but the mark in %s counts %d. "+
+			"Entries have been removed from the end of the log; appending would write over the gap, "+
+			"so this server will not start. Restore the log from backup, or move both files aside to "+
+			"begin a new chain and keep the old pair for the auditor",
+			auditchain.ErrTruncated, l.filePath, len(entries), l.statePath, l.anchor.Count)
+	}
+
 	if len(entries) == 0 {
 		l.chain, err = auditchain.New(l.key)
 		if err != nil {
@@ -269,16 +287,6 @@ func (l *Logger) recover() error {
 			prev = rec.Hash
 		}
 		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
-	case uint64(len(entries)) < l.anchor.Count:
-		// Fewer records than the mark counted: the log was truncated. Resuming here
-		// would mint a sequence number that already exists — a fork that persists
-		// cleanly and can never verify again — so refuse to start rather than append
-		// over the evidence.
-		return fmt.Errorf("audit: %w: %s holds %d records but the mark in %s counts %d. "+
-			"Entries have been removed from the end of the log; appending would write over the gap, "+
-			"so this server will not start. Restore the log from backup, or move both files aside to "+
-			"begin a new chain and keep the old pair for the auditor",
-			auditchain.ErrTruncated, l.filePath, len(entries), l.statePath, l.anchor.Count)
 	case l.stateMissing:
 		// The mark was removed from a log already in the shared format, so there is no
 		// anchor to resume against. Resume from the log's own tail, but leave l.anchor

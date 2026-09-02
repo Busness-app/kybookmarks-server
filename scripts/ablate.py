@@ -31,6 +31,10 @@ ABLATIONS = [
  ("high-water mark may drop", AUDIT, "TestTruncation|TestHighWaterMark",
   "\tif st != nil && uint64(st.Count) > l.anchor.Count {\n\t\treturn nil\n\t}", "\t_ = st"),
 
+ ("emptied log skips the truncation check", AUDIT, "TestEmptyOrCorruptLogWithAMarkIsRefused",
+  "\tif uint64(len(entries)) < l.anchor.Count {",
+  "\tif false && uint64(len(entries)) < l.anchor.Count {"),
+
  ("self-heal missing state", AUDIT, "TestMissingState",
   "\tif st == nil && len(entries) > 0 && l.anchor.Count == 0 {\n\t\tl.stateMissing = true\n\t}",
   "\tif false {\n\t\tl.stateMissing = true\n\t}"),

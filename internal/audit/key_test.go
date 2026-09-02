@@ -737,3 +737,44 @@ func TestHungStoreDelaysTheNextRecordButNeverDropsIt(t *testing.T) {
 		t.Fatalf("pipe held %v, want both records", seen)
 	}
 }
+
+// A log emptied to zero bytes, filled with junk, or deleted outright reads as no entries
+// at all. That is the most truncated a log can be, and it must not get a gentler answer
+// than a log truncated to one record: before the check was hoisted above the empty-log
+// short-circuit, the worst case opened and accepted appends.
+func TestEmptyOrCorruptLogWithAMarkIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mutilate func(t *testing.T, logPath string)
+	}{
+		{"zero bytes", func(t *testing.T, p string) {
+			if err := os.WriteFile(p, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"not json", func(t *testing.T, p string) {
+			if err := os.WriteFile(p, []byte("not json at all\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"deleted", func(t *testing.T, p string) {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			l := newTestLogger(t, root)
+			for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+				mustLog(t, l, a)
+			}
+			tc.mutilate(t, filepath.Join(root, "audit", logFile))
+
+			_, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+			if !errors.Is(err, auditchain.ErrTruncated) {
+				t.Fatalf("NewLogger on a %s log with a mark of 3: err=%v, want ErrTruncated", tc.name, err)
+			}
+		})
+	}
+}
