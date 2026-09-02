@@ -2,6 +2,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -210,5 +213,64 @@ func TestE2EAPIWorkflows(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &auditResp)
 	if !auditResp.Valid || auditResp.Count == 0 {
 		t.Fatalf("audit verify failed: %+v", auditResp)
+	}
+}
+
+// syncRequest posts a directory-sync event, optionally signing it.
+func syncRequest(t *testing.T, handler http.Handler, secret, body string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/sync/events", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(body))
+		req.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w.Code
+}
+
+func TestDirectorySyncRequiresSignature(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	const body = `{"action":"user.create","user":{"id":"sso-1","username":"mallory","role":"admin"}}`
+
+	// An unsigned request must not be trusted. Omitting the header is the whole attack.
+	if code := syncRequest(t, handler, "", body); code != http.StatusUnauthorized {
+		t.Errorf("unsigned sync event: got %d, want 401", code)
+	}
+	if acc, _ := srv.store.GetAccountByUsernameOrEmail("mallory"); acc != nil {
+		t.Fatal("unsigned sync event created an admin account")
+	}
+
+	if code := syncRequest(t, handler, "wrong-secret", body); code != http.StatusUnauthorized {
+		t.Errorf("badly signed sync event: got %d, want 401", code)
+	}
+	if acc, _ := srv.store.GetAccountByUsernameOrEmail("mallory"); acc != nil {
+		t.Fatal("badly signed sync event created an admin account")
+	}
+
+	if code := syncRequest(t, handler, "test-sync-secret", body); code != http.StatusOK {
+		t.Fatalf("correctly signed sync event: got %d, want 200", code)
+	}
+	if acc, _ := srv.store.GetAccountByUsernameOrEmail("mallory"); acc == nil {
+		t.Fatal("correctly signed sync event did not replicate the user")
+	}
+}
+
+// A server with no sync secret must fail closed, not accept everything.
+func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+	srv.cfg.SyncSecret = ""
+
+	const body = `{"action":"user.create","user":{"id":"sso-2","username":"nobody","role":"admin"}}`
+	if code := syncRequest(t, handler, "", body); code != http.StatusUnauthorized {
+		t.Errorf("sync event with no configured secret: got %d, want 401", code)
+	}
+	if acc, _ := srv.store.GetAccountByUsernameOrEmail("nobody"); acc != nil {
+		t.Fatal("sync event was applied with no secret configured")
 	}
 }
