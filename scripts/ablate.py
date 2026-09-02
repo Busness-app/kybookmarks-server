@@ -1,4 +1,4 @@
-"""Ablation suite for the audit chain and the directory-sync webhook.
+"""Ablation suite for the audit chain, the directory-sync webhook and access control.
 
 Breaks each defence in turn and asserts that some test notices. A test that still
 passes with the defence removed is not testing the defence. Run from the repo root."""
@@ -11,6 +11,11 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 AUDIT = "internal/audit/audit.go"
 ADMIN = "internal/api/admin_handlers.go"
+SERVER = "internal/api/server.go"
+AUTH = "internal/api/auth_handlers.go"
+DEVICEH = "internal/api/device_handlers.go"
+DEVICES = "internal/devices/devices.go"
+STORE = "internal/store/store.go"
 
 BACKUP = ".ablate.bak"
 
@@ -48,15 +53,64 @@ ABLATIONS = [
  ("sync signature optional again", ADMIN, "TestDirectorySync",
   '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
   '\tif s.cfg.SyncSecret == "" || r.Header.Get("X-KySignOn-Signature") == "" {\n\t\twriteJSON(w, http.StatusOK, map[string]bool{"ok": true})\n\t\treturn\n\t}\n\tmac := hmac.New'),
+
+ ("pair/request public again", SERVER, "TestPairRequestRequiresAuth|TestPairingCannotEscalate",
+  '\tmux.HandleFunc("POST /api/devices/pair/request", s.withAuth(s.handlePairRequest))',
+  '\tmux.HandleFunc("POST /api/devices/pair/request", s.handlePairRequest)'),
+
+ ("pairing trusts the body userId", DEVICEH, "TestPairRequestIgnoresBodyUserID|TestPairingCannotEscalate",
+  "\tvar req struct {\n\t\tDeviceName string `json:\"deviceName\"`",
+  "\tvar req struct {\n\t\tUserID     string `json:\"userId\"`\n\t\tDeviceName string `json:\"deviceName\"`",
+  "\tsess, err := s.devices.RequestPairing(acc.ID, req.DeviceName, req.DeviceType)",
+  "\tif req.UserID != \"\" {\n\t\tacc.ID = req.UserID\n\t}\n\tsess, err := s.devices.RequestPairing(acc.ID, req.DeviceName, req.DeviceType)"),
+
+ ("approval not scoped to the owner", DEVICES, "TestApprovalCannotCross|TestPairingCannotEscalate",
+  "\t\tWHERE pin = ? AND user_id = ? AND expires_at > ? AND approved = 0`\n\tres, err := s.db.Exec(query, vaultKeyEnvelope, pin, userID, now)",
+  "\t\tWHERE pin = ? AND (user_id = ? OR 1=1) AND expires_at > ? AND approved = 0`\n\tres, err := s.db.Exec(query, vaultKeyEnvelope, pin, userID, now)"),
+
+ ("setup re-check dropped", AUTH, "TestSetupCannotEnrolTwoAdmins",
+  "\tif err := s.store.CreateFirstAdmin(admin); err != nil {",
+  "\tif err := s.store.CreateAccount(admin); err != nil {"),
+
+ ("recovery ignores suspension", AUTH, "TestRecoveryRefusesSuspendedAccount",
+  '\tif acc.Status != "active" {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"',
+  '\tif false {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"'),
+
+ ("recovery unmetered", AUTH, "TestRecoveryLocksOut",
+  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"',
+  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"'),
+
+ ("constant decoy salt", AUTH, "TestLoginParamsDoesNotReveal",
+  '\t\t\t"salt":       hex.EncodeToString(mac.Sum(nil)[:16]),',
+  '\t\t\t"salt":       "0123456789abcdef0123456789abcdef",'),
+
+ ("csrf compared to the cookie", SERVER, "TestCSRFTokenMustMatchTheSession",
+  '\tif sess == nil || sess.CSRFToken == "" {\n\t\treturn false\n\t}\n\n\theaderToken := r.Header.Get("X-CSRF-Token")\n\treturn headerToken != "" && hmac.Equal([]byte(headerToken), []byte(sess.CSRFToken))',
+  '\tcookie, err := r.Cookie(csrfCookieName)\n\tif err != nil || cookie.Value == "" {\n\t\treturn false\n\t}\n\n\theaderToken := r.Header.Get("X-CSRF-Token")\n\treturn headerToken != "" && hmac.Equal([]byte(headerToken), []byte(cookie.Value))'),
+
+ ("sso adopts on any email claim", AUTH, "TestSSOWillNotAdopt",
+  "\tif user == nil && claims.EmailVerified && claims.Email != \"\" {",
+  "\tif user == nil && claims.Email != \"\" {"),
+
+ ("sso subject collides on empty string", STORE, "TestSecondAccountCanBeCreated|TestSSOWillNotAdopt",
+  "\tif s == \"\" {\n\t\treturn nil\n\t}\n\treturn s\n}",
+  "\treturn s\n}"),
 ]
 
+
 fail = False
-for name, path, tests, old, new in ABLATIONS:
+for name, path, tests, *edits in ABLATIONS:
     src = open(path).read()
-    if old not in src:
+    patched, missed = src, False
+    for old, new in zip(edits[::2], edits[1::2]):
+        if old not in patched:
+            missed = True
+            break
+        patched = patched.replace(old, new, 1)
+    if missed:
         print(f"{name}: PATCH DID NOT MATCH -- ablation not applied"); fail = True; continue
     shutil.copy(path, BACKUP)
-    open(path, "w").write(src.replace(old, new, 1))
+    open(path, "w").write(patched)
     try:
         b = subprocess.run(["go", "build", "./..."], capture_output=True, text=True)
         if b.returncode != 0:

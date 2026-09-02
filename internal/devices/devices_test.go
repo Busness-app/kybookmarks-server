@@ -37,7 +37,7 @@ func TestDevicePairingFlow(t *testing.T) {
 	}
 
 	// Approve pairing with PIN and encrypted key envelope
-	err = dStore.ApprovePairing(sess.PIN, "encrypted-vault-key-envelope-bytes")
+	err = dStore.ApprovePairing("user-1", sess.PIN, "encrypted-vault-key-envelope-bytes")
 	if err != nil {
 		t.Fatalf("approval failed: %v", err)
 	}
