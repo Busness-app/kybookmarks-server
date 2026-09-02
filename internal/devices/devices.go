@@ -6,17 +6,17 @@ import (
 	"sync"
 	"time"
 
-	"kybookmarks-server/internal/crypto"
-	"kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/crypto"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
 
 	"github.com/google/uuid"
 )
 
 var (
-	ErrPairingExpired   = errors.New("pairing session expired or not found")
-	ErrNotApproved      = errors.New("pairing session not yet approved")
-	ErrAlreadyRedeemed  = errors.New("pairing session already redeemed")
-	ErrInvalidPIN       = errors.New("invalid pairing PIN")
+	ErrPairingExpired  = errors.New("pairing session expired or not found")
+	ErrNotApproved     = errors.New("pairing session not yet approved")
+	ErrAlreadyRedeemed = errors.New("pairing session already redeemed")
+	ErrInvalidPIN      = errors.New("invalid pairing PIN")
 )
 
 type Store struct {

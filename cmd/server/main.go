@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"kybookmarks-server/internal/api"
-	"kybookmarks-server/internal/audit"
-	"kybookmarks-server/internal/devices"
-	"kybookmarks-server/internal/sso"
-	"kybookmarks-server/internal/store"
-	"kybookmarks-server/internal/vault"
+	"github.com/Busness-app/kybookmarks-server/internal/api"
+	"github.com/Busness-app/kybookmarks-server/internal/audit"
+	"github.com/Busness-app/kybookmarks-server/internal/devices"
+	"github.com/Busness-app/kybookmarks-server/internal/sso"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/vault"
 )
 
 func main() {

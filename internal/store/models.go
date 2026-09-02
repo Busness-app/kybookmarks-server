@@ -100,9 +100,9 @@ type PairingSession struct {
 
 // SyncCursorRequest sent by client to retrieve changes.
 type SyncRequest struct {
-	SinceTimestamp time.Time          `json:"sinceTimestamp"`
-	KnownVersions  map[string]int64   `json:"knownVersions"` // objectId -> client version
-	Changes        []VaultObject      `json:"changes"`       // Objects client wants to write
+	SinceTimestamp time.Time        `json:"sinceTimestamp"`
+	KnownVersions  map[string]int64 `json:"knownVersions"` // objectId -> client version
+	Changes        []VaultObject    `json:"changes"`       // Objects client wants to write
 }
 
 // SyncResponse returned to client.

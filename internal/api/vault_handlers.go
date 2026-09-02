@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
 )
 
 func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"kybookmarks-server/internal/store"
+	"github.com/Busness-app/kybookmarks-server/internal/store"
 )
 
 func TestVaultSyncAndCAS(t *testing.T) {
