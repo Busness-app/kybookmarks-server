@@ -36,8 +36,12 @@ const (
 
 	actionRekeyed = "audit.rekeyed"
 
-	// appendTimeout bounds the wait for the chain lock and the two writes made under
-	// it. It is the only thing between one hung store and a logger that never returns.
+	// appendTimeout bounds Append's wait for the chain lock, and nothing else. It does
+	// not bound persist: persist runs with the chain lock held and no context reaches
+	// it, so a hung store hangs the caller for as long as it stays hung. Log holds l.mu
+	// across the whole Append, and l.chain is touched on exactly one line of this file,
+	// so the chain lock is uncontended by construction and this deadline never fires.
+	// It is a backstop against a second Append call site, not a live defence.
 	appendTimeout = 5 * time.Second
 
 	// legacyDefaultSecret is the constant this server shipped with before keying.
@@ -393,11 +397,17 @@ func (l *Logger) legacyVersions(entries []Entry) ([]int, bool) {
 // The bound Append needs is a bound on a hung store, not a channel the remote end holds,
 // so it is imposed here: once, where no future handler can pass the wrong context.
 func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details string) (Entry, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)
-	defer cancel()
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Derived after the mutex, not before. l.mu is a plain sync.Mutex that no context
+	// can interrupt, so a deadline started above this line is spent waiting on it: a
+	// caller queued behind a hung store would reach Append with an already-dead context
+	// and throw its record away. That is the suppression this context handling exists to
+	// prevent, reached by load instead of by a dropped connection. Every waiter gets its
+	// budget measured from the moment it can actually make progress.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)
+	defer cancel()
 
 	entry := Entry{
 		ID:        uuid.NewString(),
@@ -409,6 +419,10 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		Details:   details,
 	}
 
+	// The only use of l.chain in this package, and it is under l.mu. That is the
+	// invariant appendTimeout leans on: one call site means acquire never contends, so
+	// the deadline cannot expire on a queue. A second Append call site would reintroduce
+	// an unbounded wait -- TestChainIsDrivenFromOneCallSite refuses one.
 	var stateErr error
 	_, err := l.chain.Append(ctx, func(r auditchain.Record, a auditchain.Anchor) error {
 		entry.PrevHash, entry.Hash = r.Prev, r.Hash

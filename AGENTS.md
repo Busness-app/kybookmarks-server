@@ -46,6 +46,15 @@ Rules for anyone touching this package:
   call site discards `Log`'s error — so honouring it would let a client suppress the record
   of what it just did by aborting the connection. Never pass a caller's context straight to
   `auditchain.Append`.
+- **Derive that context *after* `l.mu.Lock()`, never before.** `l.mu` is a plain mutex no
+  context can interrupt, so a deadline started above it is spent waiting on it: a caller
+  queued behind a hung store reaches `Append` with a dead context and discards its record.
+  That is the same suppression, reached by load instead of by a hang-up.
+- **`appendTimeout` bounds only the chain lock, not `persist`.** No context reaches
+  `persist`, so a hung store hangs its caller until it unhangs. The deadline is sound only
+  because `l.chain` is driven from exactly one call site, under `l.mu`, so the chain lock
+  never contends. A second `Append` call site breaks that and is refused by
+  `TestChainIsDrivenFromOneCallSite`.
 - **A mark write that fails is reported, never rolled back.** The record is already on
   disk, so refusing the append would leave the chain behind the log and fork it on the next
   call. `Log` returns the error; the chain advances anyway.

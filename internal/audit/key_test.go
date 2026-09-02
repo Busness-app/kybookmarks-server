@@ -1,13 +1,16 @@
 package audit
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/auditchain"
@@ -630,5 +633,107 @@ func TestOverrunRunMustChain(t *testing.T) {
 	}
 	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); !errors.Is(err, auditchain.ErrBrokenChain) {
 		t.Fatalf("NewLogger on a spliced overrun: err=%v, want ErrBrokenChain", err)
+	}
+}
+
+// appendTimeout is only sound because the chain lock is uncontended: Log holds l.mu
+// across the whole Append and l.chain is driven from nowhere else. A second call site
+// would turn acquire into a real queue, and the deadline would start discarding records
+// again -- which is the bug TestHungStoreDelaysTheNextRecordButNeverDropsIt covers.
+func TestChainIsDrivenFromOneCallSite(t *testing.T) {
+	src, err := os.ReadFile("audit.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := bytes.Count(src, []byte("l.chain.")); n != 1 {
+		t.Fatalf("audit.go drives l.chain from %d call sites, want 1: a second one puts an unbounded wait behind appendTimeout", n)
+	}
+}
+
+// A hung store must delay the next record, never discard it. persist runs with the chain
+// lock held and no context reaches it, so appendTimeout cannot bound the caller that is
+// stuck -- but the caller queued behind it on l.mu must still get its full budget once it
+// can make progress. Deriving the deadline above the mutex spent it on the wait, and the
+// queued record was thrown away: the same suppression a dropped connection used to buy,
+// reached by load instead, which is what a brute-forcer generates.
+func TestHungStoreDelaysTheNextRecordButNeverDropsIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("holds a real FIFO open for longer than appendTimeout")
+	}
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+
+	// Replace the log with a FIFO nobody is reading: os.OpenFile then blocks in the
+	// kernel, inside persist, where no context can reach it.
+	logPath := filepath.Join(root, "audit", logFile)
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(logPath, 0600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "first")
+		first <- err
+	}()
+
+	// Wait until the first caller owns l.mu, so the second is genuinely the queued one.
+	for deadline := time.Now().Add(10 * time.Second); l.mu.TryLock(); {
+		l.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("first Log never took the audit mutex")
+		}
+		runtime.Gosched()
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "second")
+		second <- err
+	}()
+
+	// The hang has to outlast appendTimeout: that is the whole experiment, so the wait
+	// is the measurement rather than a guess at how long something takes.
+	time.Sleep(appendTimeout + time.Second)
+
+	// O_RDWR so the reader never sees EOF in the gap between the two writers.
+	r, err := os.OpenFile(logPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	lines := make(chan string, 8)
+	go func() {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	if err := <-first; err != nil {
+		t.Fatalf("first Log: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("a hung store discarded the queued record instead of delaying it: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case ln := <-lines:
+			for _, want := range []string{"first", "second"} {
+				if strings.Contains(ln, `"details":"`+want+`"`) {
+					seen[want] = true
+				}
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("timed out reading records back from the pipe, saw %v", seen)
+		}
+	}
+	if !seen["first"] || !seen["second"] {
+		t.Fatalf("pipe held %v, want both records", seen)
 	}
 }

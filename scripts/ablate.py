@@ -47,6 +47,15 @@ ABLATIONS = [
   "\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)",
   "\tctx, cancel := context.WithTimeout(ctx, appendTimeout)"),
 
+ ("audit deadline started before the mutex it cannot interrupt", AUDIT, "TestHungStoreDelays",
+  "\t// budget measured from the moment it can actually make progress.\n\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)\n\tdefer cancel()\n",
+  "\t// budget measured from the moment it can actually make progress.\n",
+  "(Entry, error) {\n\tl.mu.Lock()",
+  "(Entry, error) {\n\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)\n\tdefer cancel()\n\tl.mu.Lock()"),
+
+ ("chain driven from a second call site", AUDIT, "TestChainIsDrivenFromOneCallSite",
+  "\tl.count++\n\treturn entry, stateErr", "\t_ = l.chain.Anchor()\n\tl.count++\n\treturn entry, stateErr"),
+
  ("a failed mark write stops the chain", AUDIT, "TestUnwritableMarkDoesNotForkTheChain",
   "\t\t\tstateErr = l.saveState()", "\t\t\treturn l.saveState()"),
 
