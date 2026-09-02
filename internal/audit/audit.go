@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -521,4 +522,25 @@ func splitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// ExportChain writes the log as shared-package records, and returns the anchor to
+// check them against. This is the form kyauditverify reads: the products store
+// different fields, so the records as the chain sees them are the only thing one
+// verifier can consume from all of them.
+func (l *Logger) ExportChain(w io.Writer) (auditchain.Anchor, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entries, err := l.readEntries(0)
+	if err != nil {
+		return auditchain.Anchor{}, err
+	}
+	enc := json.NewEncoder(w)
+	for i, e := range entries {
+		if err := enc.Encode(recordOf(e, uint64(i+1))); err != nil {
+			return auditchain.Anchor{}, err
+		}
+	}
+	return l.anchor, nil
 }

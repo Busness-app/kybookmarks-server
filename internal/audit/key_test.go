@@ -1,11 +1,14 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Busness-app/ky-primitives/auditchain"
 	"time"
 )
 
@@ -378,5 +381,33 @@ func TestStateIsReplacedNotRewrittenInPlace(t *testing.T) {
 	}
 	if after.Mode().Perm() != 0600 {
 		t.Errorf("replaced audit state has mode %v, want 0600", after.Mode().Perm())
+	}
+}
+
+// The exported form must verify with nothing but the shared package: that is what
+// makes one verifier possible across products that store different fields.
+func TestExportedChainVerifiesWithSharedPackageAlone(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+	mustLog(t, l, "vault.sync")
+
+	var buf bytes.Buffer
+	anchor, err := l.ExportChain(&buf)
+	if err != nil {
+		t.Fatalf("ExportChain failed: %v", err)
+	}
+
+	var recs []auditchain.Record
+	dec := json.NewDecoder(&buf)
+	for {
+		var r auditchain.Record
+		if err := dec.Decode(&r); err != nil {
+			break
+		}
+		recs = append(recs, r)
+	}
+	if err := auditchain.Verify(l.key, recs, anchor); err != nil {
+		t.Fatalf("exported chain does not verify: %v", err)
 	}
 }
