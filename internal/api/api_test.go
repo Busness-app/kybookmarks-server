@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -276,5 +277,41 @@ func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
 	}
 	if acc, _ := srv.store.GetAccountByUsernameOrEmail("nobody"); acc != nil {
 		t.Fatal("sync event was applied with no secret configured")
+	}
+}
+
+// A client that aborts its connection must not be able to suppress the record of what
+// it just did. r.Context() dies with the connection, so if Log honoured it a
+// brute-forcing client could drop every auth.login_failed simply by hanging up.
+func TestAbortedRequestStillAudits(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	before, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // the client hung up before the handler reached its audit call
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	after, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("aborted request suppressed its audit record: %d entries before, %d after", len(before), len(after))
+	}
+	if got := after[len(after)-1].Action; got != "auth.login_failed" {
+		t.Fatalf("last audit action = %q, want auth.login_failed", got)
 	}
 }

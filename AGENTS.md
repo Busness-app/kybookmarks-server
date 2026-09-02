@@ -40,6 +40,20 @@ Rules for anyone touching this package:
 - **Order writes: entry first, state second.** A crash between them under-counts by one,
   which fails open for the newest entry only. The reverse order raises a false truncation
   alarm on every interrupted write, and false alarms are how real alarms get ignored.
+- **The audit write is not the caller's to cancel.** `Log` takes a `context.Context` for
+  its values, then strips the cancellation with `context.WithoutCancel` and applies its
+  own timeout. Handlers pass `r.Context()`, which dies when the client hangs up, and every
+  call site discards `Log`'s error — so honouring it would let a client suppress the record
+  of what it just did by aborting the connection. Never pass a caller's context straight to
+  `auditchain.Append`.
+- **A mark write that fails is reported, never rolled back.** The record is already on
+  disk, so refusing the append would leave the chain behind the log and fork it on the next
+  call. `Log` returns the error; the chain advances anyway.
+- **A mark behind the log is caught up; a mark ahead of it is fatal.** On start, every
+  record past the mark is verified against the key and against its predecessor, then the
+  mark advances to the log's tail — a config volume that was briefly unwritable recovers.
+  A log *shorter* than the mark is truncation: `NewLogger` returns `ErrTruncated` and
+  `cmd/server` exits, naming both files. This is a boot failure, not a warning.
 
 `python3 scripts/ablate.py` re-runs the ablation suite: it breaks each defence in turn and
 fails if any test still passes. Run it after changing `internal/audit` or the sync webhook.

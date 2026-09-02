@@ -544,3 +544,91 @@ func TestUnwritableMarkDoesNotForkTheChain(t *testing.T) {
 		t.Fatalf("log forked after the mark became unwritable: %v", err)
 	}
 }
+
+// writeLog replaces the log file with exactly these entries, one JSON object per line.
+func writeLog(t *testing.T, root string, entries []Entry) {
+	t.Helper()
+	var buf strings.Builder
+	for _, e := range entries {
+		b, _ := json.Marshal(e)
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(root, "audit", logFile), []byte(buf.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A config volume that was unwritable for a while leaves the mark several records
+// behind, not one. That is a disk fault, not tampering: once the volume is writable the
+// next start must verify the whole run and catch up, rather than refuse to boot.
+func TestMarkManyBehindIsCaughtUp(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+
+	configDir := filepath.Join(root, "config")
+	if err := os.Chmod(configDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x"); err == nil {
+			t.Fatal("Log hid an unwritable audit mark")
+		}
+	}
+	if err := os.Chmod(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newTestLogger(t, root)
+	mustVerify(t, restarted, true, "restart with the mark three behind")
+	st, err := restarted.loadState()
+	if err != nil || st == nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	if st.Count != 4 {
+		t.Fatalf("mark caught up to %d, want 4", st.Count)
+	}
+}
+
+// Every record past the mark must follow the one before it, not merely carry a valid
+// digest for its own position. A fork spliced in past the mark verifies record by record
+// and is caught only by the predecessor check.
+func TestOverrunRunMustChain(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-mint the second entry with different content and rebuild the third on top of
+	// that fork. The third then carries a real digest for sequence 3 while pointing at a
+	// predecessor the log does not contain.
+	forked := entries[1]
+	forked.Details = "different"
+	records, _, err := auditchain.Replay(l.key, [][]string{
+		fieldsOf(entries[0]), fieldsOf(forked), fieldsOf(entries[2]),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries[2].PrevHash, entries[2].Hash = records[2].Prev, records[2].Hash
+	writeLog(t, root, entries)
+
+	// Mark at one, so entries two and three are the overrun run.
+	st, _ := json.Marshal(state{Count: 1, Hash: entries[0].Hash})
+	if err := os.WriteFile(filepath.Join(root, "config", stateFile), st, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if auditchain.VerifyRecord(l.key, recordOf(entries[2], 3)) != nil {
+		t.Fatal("test is not exercising the predecessor check: the spliced record fails VerifyRecord")
+	}
+	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); !errors.Is(err, auditchain.ErrBrokenChain) {
+		t.Fatalf("NewLogger on a spliced overrun: err=%v, want ErrBrokenChain", err)
+	}
+}

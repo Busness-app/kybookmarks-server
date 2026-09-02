@@ -36,12 +36,22 @@ ABLATIONS = [
   "\tif false {\n\t\tl.stateMissing = true\n\t}"),
 
  ("state recreated by append", AUDIT, "TestMissingState",
-  "\tif a := l.chain.Anchor(); a.Count > l.anchor.Count && !l.stateMissing {",
-  "\tif a := l.chain.Anchor(); a.Count > l.anchor.Count {"),
+  "\t\tif a.Count > l.anchor.Count && !l.stateMissing {",
+  "\t\tif a.Count > l.anchor.Count {"),
 
  ("mark never catches up after an interrupted write", AUDIT, "TestStateCatchesUp|TestTruncation",
-  "\tif uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {",
-  "\tif false && uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {"),
+  "\toverrun := l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count",
+  "\toverrun := false && l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count"),
+
+ ("audit write cancellable by the client", AUDIT, "TestAbortedRequestStillAudits",
+  "\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)",
+  "\tctx, cancel := context.WithTimeout(ctx, appendTimeout)"),
+
+ ("a failed mark write stops the chain", AUDIT, "TestUnwritableMarkDoesNotForkTheChain",
+  "\t\t\tstateErr = l.saveState()", "\t\t\treturn l.saveState()"),
+
+ ("overrun run not checked against its predecessors", AUDIT, "TestOverrunRunMustChain",
+  "\t\t\tif rec.Prev != prev {", "\t\t\tif false && rec.Prev != prev {"),
 
  ("non-atomic state write", AUDIT, "TestStateIsReplaced|TestVerifyChainIsNotRaced",
   "\treturn writeFileAtomic(l.statePath, data)", "\treturn os.WriteFile(l.statePath, data, 0600)"),
@@ -77,12 +87,12 @@ ABLATIONS = [
   "\tif err := s.store.CreateAccount(admin); err != nil {"),
 
  ("recovery ignores suspension", AUTH, "TestRecoveryRefusesSuspendedAccount",
-  '\tif acc.Status != "active" {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"',
-  '\tif false {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"'),
+  '\tif acc.Status != "active" {\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_failed"',
+  '\tif false {\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_failed"'),
 
  ("recovery unmetered", AUTH, "TestRecoveryLocksOut",
-  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"',
-  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"'),
+  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_blocked"',
+  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_blocked"'),
 
  ("constant decoy salt", AUTH, "TestLoginParamsDoesNotReveal",
   '\t\t\t"salt":       hex.EncodeToString(mac.Sum(nil)[:16]),',

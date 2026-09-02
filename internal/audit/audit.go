@@ -36,6 +36,10 @@ const (
 
 	actionRekeyed = "audit.rekeyed"
 
+	// appendTimeout bounds the wait for the chain lock and the two writes made under
+	// it. It is the only thing between one hung store and a logger that never returns.
+	appendTimeout = 5 * time.Second
+
 	// legacyDefaultSecret is the constant this server shipped with before keying.
 	// It is public and worthless as a secret; it exists only so logs written under
 	// it still verify. Never use it to write an entry.
@@ -233,18 +237,32 @@ func (l *Logger) recover() error {
 
 	last := recordOf(entries[len(entries)-1], uint64(len(entries)))
 	anchor := l.anchor
-	overrun := l.anchor.Count > 0 && uint64(len(entries)) == l.anchor.Count+1
+	overrun := l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count
 
 	// Resume requires an anchor naming this exact record as the tail, so every case
 	// where ours does not has to be settled before the call rather than after it.
 	switch {
 	case overrun:
-		// An interrupted write leaves the mark one behind the log. Only a key holder
-		// can produce an entry that carries its own digest, so that entry is ours;
-		// catch up to it. Resume would reject a forged one on its own; asking here only
-		// buys the operator an error that names the overrun.
-		if err := auditchain.VerifyRecord(l.key, last); err != nil {
-			return fmt.Errorf("audit: log overruns its mark and the extra record does not verify: %w", err)
+		// The mark is behind the log: records landed and the mark write that should have
+		// followed did not. One behind is the classic interrupted write; several behind
+		// is a config volume that was unwritable for a while, which is a disk fault and
+		// not tampering, and refusing to boot on it would be refusing to boot on a full
+		// disk. So walk the whole run rather than only the last of it: every record past
+		// the mark must carry its own digest and must follow the one before it, starting
+		// from the mark's own hash. Minting any single one of them still requires the
+		// key, so accepting a run is no weaker than accepting one.
+		prev := l.anchor.Hash
+		for i := l.anchor.Count; i < uint64(len(entries)); i++ {
+			rec := recordOf(entries[i], i+1)
+			if err := auditchain.VerifyRecord(l.key, rec); err != nil {
+				return fmt.Errorf("audit: %s overruns the mark in %s and record %d does not verify: %w",
+					l.filePath, l.statePath, rec.Seq, err)
+			}
+			if rec.Prev != prev {
+				return fmt.Errorf("audit: %s overruns the mark in %s and record %d does not follow its predecessor: %w",
+					l.filePath, l.statePath, rec.Seq, auditchain.ErrBrokenChain)
+			}
+			prev = rec.Hash
 		}
 		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
 	case uint64(len(entries)) < l.anchor.Count:
@@ -252,8 +270,11 @@ func (l *Logger) recover() error {
 		// would mint a sequence number that already exists — a fork that persists
 		// cleanly and can never verify again — so refuse to start rather than append
 		// over the evidence.
-		return fmt.Errorf("audit: %w: log holds %d records, the mark counted %d",
-			auditchain.ErrTruncated, len(entries), l.anchor.Count)
+		return fmt.Errorf("audit: %w: %s holds %d records but the mark in %s counts %d. "+
+			"Entries have been removed from the end of the log; appending would write over the gap, "+
+			"so this server will not start. Restore the log from backup, or move both files aside to "+
+			"begin a new chain and keep the old pair for the auditor",
+			auditchain.ErrTruncated, l.filePath, len(entries), l.statePath, l.anchor.Count)
 	case l.stateMissing:
 		// The mark was removed from a log already in the shared format, so there is no
 		// anchor to resume against. Resume from the log's own tail, but leave l.anchor
@@ -360,9 +381,21 @@ func (l *Logger) legacyVersions(entries []Entry) ([]int, bool) {
 	return versions, true
 }
 
-// Log writes a new event to the audit trail. ctx bounds the wait for the chain lock,
-// so a hung store cannot leave every later caller blocked on it forever.
+// Log writes a new event to the audit trail.
+//
+// ctx is accepted for its values, but its cancellation is deliberately dropped. Handlers
+// pass r.Context(), which dies the instant the client hangs up, and every call site
+// discards Log's error -- so honouring it would let a client suppress the record of what
+// it just did by aborting the connection after the handler had already acted. The records
+// a brute-forcing client most wants gone, auth.login_failed and auth.recovery_blocked, are
+// exactly the ones written that way. The audit write is not the caller's to cancel.
+//
+// The bound Append needs is a bound on a hung store, not a channel the remote end holds,
+// so it is imposed here: once, where no future handler can pass the wrong context.
 func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details string) (Entry, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)
+	defer cancel()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -396,10 +429,10 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		// which fails open for the newest entry only; the reverse order would raise a
 		// false truncation alarm on every interrupted write.
 		//
-		// Still two writes to two files. persist makes the chain advance only when both
-		// return nil, which is the part that was wrong before; it does not make them
-		// atomic. The one-ahead recovery in recover() is what covers the remaining
-		// window.
+		// Still two writes to two files, and persist does not make them one. The chain
+		// advances when the *record* write succeeds -- that is the part that was wrong
+		// before. The mark write is best-effort: its failure is returned from Log, not to
+		// the chain, and recover() reconciles a mark left behind however far it fell.
 		//
 		// stateMissing means this deployment deliberately has no anchor file. The record
 		// is still written and the chain still advances; returning an error here would
