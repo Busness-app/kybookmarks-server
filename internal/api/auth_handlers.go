@@ -1,10 +1,13 @@
 package api
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -118,18 +121,47 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acc, err := s.store.GetAccountByUsernameOrEmail(req.Username)
+	ip := clientIP(r)
+	cleanUser := strings.ToLower(strings.TrimSpace(req.Username))
+
+	// Recovery mints a session and returns the vault key wrappers, so it gets the
+	// same lockout as login. Without it this is an unmetered scrypt oracle.
+	s.loginAttemptsMu.Lock()
+	tracker, exists := s.loginAttempts[cleanUser]
+	if exists && time.Now().Before(tracker.blockedUntil) {
+		s.loginAttemptsMu.Unlock()
+		_, _ = s.audit.Log("auth.recovery_blocked", "", "", ip, "recovery blocked due to rate limit for "+cleanUser)
+		http.Error(w, `{"error":"too_many_attempts","message":"Account temporarily locked for 15 minutes"}`, http.StatusTooManyRequests)
+		return
+	}
+	s.loginAttemptsMu.Unlock()
+
+	acc, err := s.store.GetAccountByUsernameOrEmail(cleanUser)
 	if err != nil {
-		http.Error(w, `{"error":"invalid_credentials"}`, http.StatusUnauthorized)
+		s.recordFailedLogin(cleanUser)
+		_, _ = s.audit.Log("auth.recovery_failed", "", "", ip, "recovery attempt for unknown user: "+cleanUser)
+		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Suspension must hold here exactly as it does on the login path.
+	if acc.Status != "active" {
+		_, _ = s.audit.Log("auth.recovery_failed", acc.ID, "", ip, "recovery attempt on suspended account")
+		http.Error(w, `{"error":"account_suspended"}`, http.StatusForbidden)
 		return
 	}
 
 	cleanSecret := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(req.RecoverySecret)), "-", "")
 	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.AuthSalt, acc.RecoveryVerifier) {
-		_, _ = s.audit.Log("auth.recovery_failed", acc.ID, "", clientIP(r), "failed recovery key attempt")
+		s.recordFailedLogin(cleanUser)
+		_, _ = s.audit.Log("auth.recovery_failed", acc.ID, "", ip, "failed recovery key attempt")
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
 		return
 	}
+
+	s.loginAttemptsMu.Lock()
+	delete(s.loginAttempts, cleanUser)
+	s.loginAttemptsMu.Unlock()
 
 	token, err := s.startSession(w, r, acc.ID, "")
 	if err != nil {
@@ -154,11 +186,13 @@ func (s *Server) handleLoginParams(w http.ResponseWriter, r *http.Request) {
 
 	acc, err := s.store.GetAccountByUsernameOrEmail(username)
 	if err != nil {
-		// Return dummy deterministic salt to prevent user enumeration
-		dummySalt := crypto.VerifyPassword(username, "00000000000000000000000000000000", "")
-		_ = dummySalt
+		// Unknown users get a salt derived from the username under a server-held
+		// key: stable across requests, indistinguishable from a real random salt.
+		// A published constant here would announce which usernames exist.
+		mac := hmac.New(sha256.New, s.saltKey)
+		mac.Write([]byte(strings.ToLower(username)))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"salt":       "0123456789abcdef0123456789abcdef",
+			"salt":       hex.EncodeToString(mac.Sum(nil)[:16]),
 			"iterations": 600000,
 		})
 		return
@@ -243,7 +277,14 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		RecoveryVerifier: req.RecoveryVerifier,
 	}
 
-	if err := s.store.CreateAccount(admin); err != nil {
+	// Re-check the account count inside the insert. Hashing above is deliberately
+	// slow, which is a wide enough window for a second request to pass the check
+	// at the top of this handler and enrol a second admin.
+	if err := s.store.CreateFirstAdmin(admin); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			http.Error(w, `{"error":"already_configured","message":"Server is already initialized"}`, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "failed to create admin: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -513,6 +554,11 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to parse claims: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	// The subject is the only stable identifier we bind accounts to.
+	if claims.Subject == "" {
+		http.Error(w, "identity provider returned no subject claim", http.StatusBadGateway)
+		return
+	}
 
 	var user *store.Account
 	if linkUserID != "" {
@@ -525,18 +571,21 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user == nil {
-		user, err = s.store.GetAccountBySSOSubject(claims.Subject)
-		if err != nil {
-			if claims.Email != "" {
-				user, err = s.store.GetAccountByUsernameOrEmail(claims.Email)
+		user, _ = s.store.GetAccountBySSOSubject(claims.Subject)
+	}
+
+	// Adopting an existing local account on first sign-in is a takeover primitive:
+	// whoever controls the claim controls the account. Only a verified email is
+	// trusted for that, never preferred_username, which most IdPs let users set.
+	if user == nil && claims.EmailVerified && claims.Email != "" {
+		if existing, lookupErr := s.store.GetAccountByUsernameOrEmail(claims.Email); lookupErr == nil {
+			existing.SSOSubject = claims.Subject
+			if err := s.store.UpdateAccount(existing); err != nil {
+				http.Error(w, "failed to link SSO identity", http.StatusInternalServerError)
+				return
 			}
-			if user == nil && claims.Username != "" {
-				user, err = s.store.GetAccountByUsernameOrEmail(claims.Username)
-			}
-			if err == nil && user != nil {
-				user.SSOSubject = claims.Subject
-				_ = s.store.UpdateAccount(user)
-			}
+			_, _ = s.audit.Log("sso.link", existing.ID, "", clientIP(r), "adopted account via verified SSO email: "+claims.Email)
+			user = existing
 		}
 	}
 

@@ -1,6 +1,11 @@
 # Security Policy
 
-KyPost is a self-hosted IMAP web client with end-to-end encryption support. This document describes security practices, known limitations, responsible disclosure, and deployment security considerations.
+KyBookmarks is a self-hosted encrypted bookmark vault. This document describes security
+practices, known limitations, responsible disclosure, and deployment security considerations.
+
+> **Note:** sections below marked with the KyPost name were inherited from a sibling project
+> and describe features KyBookmarks does not have. They are being rewritten; treat the
+> Audit Chain, Directory Sync Webhook and Unauthenticated Endpoints sections as authoritative.
 
 ## Reporting Security Vulnerabilities
 
@@ -65,6 +70,41 @@ session authentication: the HMAC signature in `X-KySignOn-Signature`, keyed with
 `SYNC_SECRET`, is the only thing standing between the internet and the ability to create
 admin accounts. `SYNC_SECRET` has no default, and the endpoint rejects every request when
 it is unset or when a signature is absent or wrong.
+
+## Unauthenticated Endpoints
+
+These are every route that reaches its handler without a session. Each one is deliberate;
+anything not listed here requires a session, and admin routes additionally require the
+admin role.
+
+| Route | What authorises it |
+|---|---|
+| `GET /api/health` | Nothing. Returns service name and time only. |
+| `GET /api/setup` | Nothing. Reports whether any account exists. |
+| `POST /api/setup` | The account table being empty. The check runs inside the insert transaction, so two concurrent calls cannot both enrol an admin. |
+| `POST /api/auth/login` | Credentials. Three failures lock the account for 15 minutes. |
+| `POST /api/auth/recovery` | The paper recovery key. Same lockout as login, and suspended accounts are refused exactly as they are on login. |
+| `GET /api/auth/login-params` | Nothing. Unknown usernames get a decoy salt derived from the username under a per-install key, so it is indistinguishable from a real one and stable across restarts. |
+| `GET /api/auth/sso-config` | Nothing. Returns the issuer and client ID an SSO login needs. |
+| `GET /api/auth/oidc/login`, `/auth/oidc/login`, `/auth/sso/login` | SSO being enabled. Sets the PKCE and state cookie. |
+| `GET /api/auth/oidc/callback` and aliases | The state cookie matching the `state` parameter, then a back-channel code exchange with the issuer. |
+| `POST /api/devices/pair/redeem` | The pairing token, which is 32 random bytes, single-use, and expires after 90 seconds. |
+| `POST /api/sync/events` | The `SYNC_SECRET` HMAC signature. See above. |
+
+### Device pairing
+
+`POST /api/devices/pair/request` requires a session and binds the pairing session to the
+caller's account; a `userId` in the body is ignored. Approval is scoped to the same account,
+so a PIN can only enrol a device onto the account that asked for it. Redemption is the only
+unauthenticated step, and the pairing token is the credential.
+
+### SSO account binding
+
+An SSO identity may adopt an existing local account only when the provider asserts a
+**verified** email that matches. `preferred_username` is never used to match, because most
+providers let the end user set it. A provider that returns no `sub` claim is refused. Linking
+an existing session to an identity still works through `?link=true`, which carries the user
+ID in the server-set state cookie.
 
 ## Known Limitations & Trust Boundaries
 
