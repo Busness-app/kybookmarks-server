@@ -50,11 +50,11 @@ const (
 	legacyDefaultSecret = "kybookmarks-default-hmac-secret"
 )
 
-// ErrCorruptLog reports a log holding lines that do not decode. It is deliberately not
-// ErrTruncated: damage and removal both leave fewer records than the mark counted, but
-// they have different causes and different remedies, and calling a torn write "entries
-// have been removed from the end of the log" accuses an operator of tampering for a
-// power cut.
+// ErrCorruptLog reports a log that is short of the mark *and* holds lines that do not
+// decode. It names what was read, not what caused it: an undecodable line is something
+// an attacker can write, so which of the two errors comes back is not evidence about
+// who or what shortened the log. It is separate from ErrTruncated only so the message
+// can mention the damaged lines and the remedy for them; both refuse to start.
 var ErrCorruptLog = errors.New("audit: log holds lines that do not decode")
 
 // Entry represents a single audit event with cryptographic hash chaining.
@@ -109,8 +109,9 @@ type Logger struct {
 	count     int
 
 	// tornTail records that the log does not end in a newline, so the next append must
-	// terminate the fragment before adding to it. Guarded by mu, like every other field
-	// the append path touches.
+	// terminate the fragment before adding to it. Every write after construction is
+	// under mu; recover() sets it without the lock, inside NewLogger, before the Logger
+	// is returned and while nothing else can reach it.
 	tornTail bool
 }
 
@@ -249,18 +250,20 @@ func (l *Logger) recover() error {
 			"for the auditor", auditchain.ErrBrokenChain, l.filePath, len(entries), l.statePath)
 	}
 
-	// A line that does not decode is damage: a torn write, a corrupted block, an editor.
-	// It leaves the parsed count below the mark exactly as a deleted record does, so
-	// without this the operator was told entries had been removed from the end -- an
-	// accusation of tampering -- for a power cut. Refusing either way is the point; only
-	// the cause and the remedy differ, and naming the wrong one is how real alarms get
-	// ignored. TestCorruptLineIsNotReportedAsTruncation holds the two apart.
+	// A line that does not decode leaves the parsed count below the mark exactly as a
+	// deleted record does, so reporting this file as "entries have been removed from the
+	// end" told the operator one cause out of several and accused them of tampering for
+	// what a power cut also produces. It cannot be told the other way either: anyone who
+	// can shorten the log can add an undecodable line, so this error is a description of
+	// the file, never a finding about its cause. It says both are possible and gives the
+	// remedy that covers both. TestCorruptLineIsNotReportedAsTruncation pins which error
+	// each file shape returns.
 	if uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {
 		return fmt.Errorf("%w: %s parses to %d records but the mark in %s counts %d, "+
-			"and %d line(s) in it do not decode. That is damage, not entries removed from the end: "+
-			"a write torn by a full disk or a crash, or a corrupted block. This server will not start. "+
-			"Keep the damaged file for the auditor, restore the log from backup, or move both files "+
-			"aside to begin a new chain",
+			"and %d line(s) in it do not decode. The log is short and damaged: a write torn by a "+
+			"full disk or a crash, a corrupted block, or records removed with damage left behind -- "+
+			"this server cannot tell those apart and will not start. Keep the file for the auditor, "+
+			"restore the log from backup, or move both files aside to begin a new chain",
 			ErrCorruptLog, l.filePath, len(entries), l.statePath, l.anchor.Count, sc.corrupt)
 	}
 
@@ -508,20 +511,22 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		if l.tornTail {
 			line = append([]byte{'\n'}, line...)
 		}
-		n, err := f.Write(line)
-		if err != nil {
-			// A partial write is the fragment this exists to contain, so record it
-			// before returning: the next append has to terminate it.
-			l.tornTail = l.tornTail || n > 0
-			f.Close()
-			return err
+		_, err = f.Write(line)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
 		}
-		l.tornTail = false
-		if err := f.Close(); err != nil {
-			// The bytes may not have reached the file. Assume the worst about the tail.
+		if err != nil {
+			// The write that just failed is where fragments come from, so assume this
+			// one left a fragment rather than asking how many bytes landed: a Close that
+			// reports a deferred write cannot say either. Terminating a tail that was
+			// already terminated costs one empty line, which scanLog skips; missing a
+			// real one welds two records into a line that decodes as neither.
+			// TestShortWriteLeavesATornTail covers the short write; the Close path is
+			// the same assumption and is not reachable in a test here.
 			l.tornTail = true
 			return err
 		}
+		l.tornTail = false
 
 		// Entry first, state second. A crash between them leaves the mark one behind,
 		// which fails open for the newest entry only; the reverse order would raise a

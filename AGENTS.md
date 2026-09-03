@@ -80,20 +80,28 @@ Rules for anyone touching this package:
   non-record changes no record count. Without this the next append was welded onto the
   fragment, the entry that landed was lost, and every later boot died accusing the operator
   of removing entries. Power loss was enough to reach it. Nothing is ever removed from the
-  log to achieve this.
-- **Damage is not truncation, and is not reported as it.** A line that does not decode
-  leaves the parsed count below the mark exactly as a deleted record does. `scanLog`
-  counts those lines and `recover` returns `ErrCorruptLog` when they explain the shortfall,
-  naming a torn write or a corrupted block and the remedy for one. `ErrTruncated` keeps its
-  meaning: records really are gone. Both are boot failures — only the accusation differs,
-  and false accusations are how real alarms get ignored.
+  log to achieve this. A failed write also records the fragment on the running `Logger`,
+  because the next append may come before any restart re-scans the file:
+  `TestShortWriteLeavesATornTail` makes the kernel produce a real short write with
+  `RLIMIT_FSIZE` and is the only test that reaches that path.
+- **A short log is described, never diagnosed.** A line that does not decode leaves the
+  parsed count below the mark exactly as a deleted record does. `scanLog` counts those
+  lines and `recover` returns `ErrCorruptLog` when the log is short *and* holds them,
+  saying so and naming both possibilities — a torn write or corrupted block, or records
+  removed with damage left behind. It does not say which: an undecodable line is
+  attacker-writable, so anyone who can shorten the log can also choose which of the two
+  errors the operator reads. `ErrTruncated` means only that the log is short and every
+  line decoded. Both are boot failures; only the wording and the remedy differ.
 - **A failed audit write is never discarded.** `internal/api` routes all 28 call sites
   through `Server.auditEvent`, which on failure logs to stderr (per `LOGGING.md`) and
-  increments the `auditWriteFailures` counter `/api/health` reports, flipping `status` to
-  `degraded`. It does not fail the request: every call site logs after the action has
+  increments a counter that flips `/api/health`'s `status` to `degraded`. The *count* is
+  not in that body: an unauthenticated caller filling the disk would be reading its own
+  progress meter. It does not fail the request: every call site logs after the action has
   already happened, so a 500 would neither undo it nor restore the record, and would invite
-  a retry that repeats it. Health stays HTTP 200 while degraded so a full disk cannot become
-  an orchestrator-driven outage. Never write `_, _ = s.audit.Log(...)`.
+  a retry that repeats it. Health stays HTTP **200** while degraded — nothing in either
+  deployment sheds a 503 from rotation, so it would only tell the healthcheck and the
+  uptime poller that a full disk is an outage. `TestDegradedHealthStaysHTTP200` pins the
+  status code. Never write `_, _ = s.audit.Log(...)`.
 - **A mark behind the log is caught up; a mark ahead of it is fatal.** On start, every
   record past the mark is verified against the key and against its predecessor, then the
   mark advances to the log's tail — a config volume that was briefly unwritable recovers.

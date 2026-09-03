@@ -101,6 +101,17 @@ ABLATIONS = [
   "\t\t\tif err := auditchain.VerifyRecord(l.key, rec); err != nil {",
   "\t\t\tif err := error(nil); err != nil {"),
 
+ ("a short write leaves no torn tail behind", AUDIT, "TestShortWrite|TestTornWrite",
+  "\t\t\tl.tornTail = true\n\t\t\treturn err", "\t\t\treturn err"),
+
+ ("degraded health answers 503", AUTH, "TestDegradedHealthStaysHTTP200",
+  '\twriteJSON(w, http.StatusOK, map[string]any{\n\t\t"status":  status,',
+  '\tcode := http.StatusOK\n\tif status == "degraded" {\n\t\tcode = http.StatusServiceUnavailable\n\t}\n\twriteJSON(w, code, map[string]any{\n\t\t"status":  status,'),
+
+ ("health hands the failure count to anyone who asks", AUTH, "TestAuditWriteFailureIsNotSilent",
+  '\t\t"service": "kybookmarks-server",\n\t\t"time":    time.Now().UTC(),',
+  '\t\t"service": "kybookmarks-server",\n\t\t"auditWriteFailures": s.auditFailures.Load(),\n\t\t"time":    time.Now().UTC(),'),
+
  ("a failed audit write is discarded again", SERVER, "TestAuditWriteFailureIsNotSilent",
   "\tif _, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details); err != nil {",
   "\t_, _ = s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err := error(nil); err != nil {"),

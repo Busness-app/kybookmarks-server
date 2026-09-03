@@ -356,14 +356,53 @@ func TestAuditWriteFailureIsNotSilent(t *testing.T) {
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	var health struct {
-		Status             string `json:"status"`
-		AuditWriteFailures uint64 `json:"auditWriteFailures"`
+		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &health); err != nil {
 		t.Fatal(err)
 	}
-	if health.Status != "degraded" || health.AuditWriteFailures == 0 {
-		t.Fatalf("health reported status=%q failures=%d after a failed audit write",
-			health.Status, health.AuditWriteFailures)
+	if health.Status != "degraded" {
+		t.Fatalf("health reported status=%q after a failed audit write", health.Status)
+	}
+
+	// The count is deliberately absent: a caller who needs no credentials to ask must
+	// not be handed a meter for their own disk-fill.
+	if strings.Contains(w.Body.String(), "auditWriteFailures") {
+		t.Fatalf("health exposed the failure count to an unauthenticated caller: %s", w.Body.String())
+	}
+}
+
+// The one thing this server decided differently from the rest of the suite is that a
+// degraded audit volume answers 200, not 503. Nothing in the repo failed when the code
+// was flipped to 503, which made the divergence a preference rather than a property.
+//
+// It is a property. Neither product runs an orchestrator that sheds a 503 from rotation:
+// both compose files are `restart: unless-stopped` with no `depends_on: service_healthy`.
+// What a 503 does reach is Docker's healthcheck and every uptime poller pointed at this
+// path, so a full disk -- which is exactly when the audit trail matters -- would read as
+// the service being down, and a restart neither empties the disk nor restores the record.
+// The counter never resets, so one transient failure would keep it "down" for the life of
+// the process.
+func TestDegradedHealthStaysHTTP200(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	srv.auditFailures.Add(1)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("degraded health returned %d, want 200: a full audit disk must not read as an outage", w.Code)
+	}
+	var health struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "degraded" {
+		t.Fatalf("health status = %q, want degraded", health.Status)
 	}
 }

@@ -754,14 +754,17 @@ func TestChainIsDrivenFromOneCallSite(t *testing.T) {
 	}
 }
 
-// A comment naming a test it is not backed by is worse than no comment: it reads as
-// evidence. Every Test... identifier mentioned in this package's non-test source must
-// name a test that exists somewhere in the repository.
-func TestCommentsNameRealTests(t *testing.T) {
+// definedTests collects every test function the repository actually defines.
+//
+// The pattern is anchored to the start of a line. A Go test function can only be declared
+// at column zero, and without the anchor a commented-out "// func TestX(" was a definition
+// as far as this map was concerned -- so a comment citing a test that had been written,
+// deleted and left behind as a comment satisfied the guard that exists precisely to catch
+// that. TestCommentedOutDefinitionDoesNotCount holds it.
+func definedTests(t *testing.T) map[string]bool {
+	t.Helper()
+	decl := regexp.MustCompile(`(?m)^func (Test[A-Z]\w*)\(`)
 	defined := map[string]bool{}
-	var cited []string
-	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
-
 	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
 			return err
@@ -770,7 +773,7 @@ func TestCommentsNameRealTests(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, m := range regexp.MustCompile(`func (Test[A-Z]\w*)\(`).FindAllStringSubmatch(string(data), -1) {
+		for _, m := range decl.FindAllStringSubmatch(string(data), -1) {
 			defined[m[1]] = true
 		}
 		return nil
@@ -778,18 +781,42 @@ func TestCommentsNameRealTests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WalkDir failed: %v", err)
 	}
+	return defined
+}
 
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("Glob failed: %v", err)
+// The fixture for the test below, and the thing the guard used to accept: a definition
+// that is not one.
+//
+// func TestSomethingThatDoesNotExist(t *testing.T) {}
+//
+// It sits in a test file because TestCommentsNameRealTests reads comments in non-test
+// sources only; here it is a fixture, there it would be a citation.
+func TestCommentedOutDefinitionDoesNotCount(t *testing.T) {
+	const commented = "TestSomethingThatDoesNotExist"
+	if definedTests(t)[commented] {
+		t.Fatalf("a commented-out func %s( counted as a definition, so a comment citing it would pass the guard", commented)
 	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
+}
+
+// A comment naming a test it is not backed by is worse than no comment: it reads as
+// evidence. Every Test... identifier mentioned in a non-test source file anywhere in the
+// repository must name a test that exists.
+//
+// "Anywhere" is the second half of the fix: this globbed internal/audit alone, so the
+// citations in internal/api -- the ones backing the claims about the audit-failure path
+// and the health endpoint -- were outside the guard that exists for exactly them.
+func TestCommentsNameRealTests(t *testing.T) {
+	defined := definedTests(t)
+	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
+	var cited []string
+
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
 		}
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("ReadFile %s: %v", f, err)
+			return err
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
@@ -797,10 +824,14 @@ func TestCommentsNameRealTests(t *testing.T) {
 			}
 			for _, n := range name.FindAllString(line, -1) {
 				if !defined[n] {
-					cited = append(cited, fmt.Sprintf("%s:%d cites %s", f, i+1, n))
+					cited = append(cited, fmt.Sprintf("%s:%d cites %s", path, i+1, n))
 				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir failed: %v", err)
 	}
 	if len(cited) > 0 {
 		t.Fatalf("comments name tests that do not exist: %v", cited)
@@ -1138,10 +1169,12 @@ func TestTornWriteDoesNotMergeIntoTheNextRecord(t *testing.T) {
 	mustVerify(t, again, true, "restart after a torn write")
 }
 
-// Damage and removal both leave the parsed count below the mark, and the log used to
-// report both as ErrTruncated -- "entries have been removed from the end of the log",
-// which accuses an operator of tampering for a corrupted block. They must be told apart:
-// the cause is different and so is the remedy. Both still refuse to boot.
+// A short log with undecodable lines and a short log without them are different files,
+// and the message must describe the one it read. Both used to come back as ErrTruncated
+// -- "entries have been removed from the end of the log" -- which states a cause this
+// package cannot establish: a power cut produces the first file, and so does an attacker
+// who shortens the log and drops in a junk line. This pins which error each shape
+// returns, and nothing more. Both refuse to boot.
 func TestCorruptLineIsNotReportedAsTruncation(t *testing.T) {
 	root := t.TempDir()
 	l := newTestLogger(t, root)

@@ -50,7 +50,8 @@ type Server struct {
 	// saltKey derives the decoy login salt served for unknown usernames.
 	saltKey []byte
 
-	// auditFailures counts audit writes that did not land, for /api/health.
+	// auditFailures counts audit writes that did not land. /api/health reports only
+	// whether it is non-zero; the count itself stays out of an unauthenticated body.
 	auditFailures atomic.Uint64
 }
 
@@ -67,9 +68,11 @@ type Server struct {
 // Log's context handling exists to prevent, reached through the filesystem.
 //
 // So the failure gets two channels an operator already watches: stderr, where LOGGING.md
-// sends security events, and /api/health, for operators who poll rather than tail. Health
-// stays HTTP 200 while degraded on purpose: a 503 would let a full disk become an
-// orchestrator-driven outage. TestAuditWriteFailureIsNotSilent covers both channels.
+// sends security events, and /api/health, which turns "degraded" and says no more than
+// that. Health stays HTTP 200 while degraded on purpose: nothing here sheds a 503 from
+// rotation, so it would only tell the healthcheck and the uptime poller that a full disk
+// is an outage, and a restart empties no disk. TestAuditWriteFailureIsNotSilent covers
+// both channels; TestDegradedHealthStaysHTTP200 pins the status code.
 //
 // Details are not logged: they carry usernames, and LOGGING.md keeps application logs to
 // coarse actor identifiers. The chain is where the detail belongs.
