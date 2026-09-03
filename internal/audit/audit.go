@@ -109,10 +109,14 @@ type Logger struct {
 	count     int
 
 	// tornTail records that the log does not end in a newline, so the next append must
-	// terminate the fragment before adding to it. Every write after construction is
-	// under mu; recover() sets it without the lock, inside NewLogger, before the Logger
-	// is returned and while nothing else can reach it.
+	// terminate the fragment before adding to it. It is only ever read from the file:
+	// recover() sets it from scanLog, without the lock, inside NewLogger before the
+	// Logger is returned, and under mu on every later reconciliation.
 	tornTail bool
+
+	// stale reports that a write failed and l.chain may therefore no longer describe the
+	// log. The next Log rebuilds it from the file before appending.
+	stale bool
 }
 
 // NewLogger initializes the audit logger. dataDir holds the log; configDir holds the
@@ -464,6 +468,15 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Before the deadline below, not after: this reads the whole log, and a budget spent
+	// on it is a budget the append does not get.
+	if l.stale {
+		if err := l.recover(); err != nil {
+			return Entry{}, fmt.Errorf("failed to reconcile the audit log after a failed write: %w", err)
+		}
+		l.stale = false
+	}
+
 	// Derived after the mutex, not before. l.mu is a plain sync.Mutex that no context
 	// can interrupt, so a deadline started above this line is spent waiting on it: a
 	// caller queued behind a hung store would reach Append with an already-dead context
@@ -516,14 +529,18 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 			err = closeErr
 		}
 		if err != nil {
-			// The write that just failed is where fragments come from, so assume this
-			// one left a fragment rather than asking how many bytes landed: a Close that
-			// reports a deferred write cannot say either. Terminating a tail that was
-			// already terminated costs one empty line, which scanLog skips; missing a
-			// real one welds two records into a line that decodes as neither.
-			// TestShortWriteLeavesATornTail covers the short write; the Close path is
-			// the same assumption and is not reachable in a test here.
-			l.tornTail = true
+			// What landed is not knowable from here, and the two branches disagree. A
+			// short write leaves a fragment. A Close reporting a deferred write-back
+			// failure -- EIO, ENOSPC, EDQUOT on a network- or FUSE-backed volume -- can
+			// leave the complete record and its newline, and assuming a fragment there
+			// mints this sequence twice: every later entry then sits one position past
+			// the sequence its digest was minted for, which is a permanent boot failure
+			// reported as tampering. So decide from nothing now; read the file on the
+			// next Log instead, when the answer is finally on disk. That is the same
+			// reconciliation recover() performs at start, and it is why a restart already
+			// heals this. TestShortWriteLeavesATornTail and
+			// TestFailedWriteReconcilesAgainstTheLog cover the two branches.
+			l.stale = true
 			return err
 		}
 		l.tornTail = false

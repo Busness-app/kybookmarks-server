@@ -101,8 +101,14 @@ ABLATIONS = [
   "\t\t\tif err := auditchain.VerifyRecord(l.key, rec); err != nil {",
   "\t\t\tif err := error(nil); err != nil {"),
 
- ("a short write leaves no torn tail behind", AUDIT, "TestShortWrite|TestTornWrite",
-  "\t\t\tl.tornTail = true\n\t\t\treturn err", "\t\t\treturn err"),
+ ("a failed write leaves the chain describing a log it no longer matches", AUDIT,
+  "TestShortWrite|TestFailedWriteReconciles",
+  "\t\t\tl.stale = true\n\t\t\treturn err", "\t\t\treturn err"),
+
+ ("the chain is never rebuilt from the log after a failed write", AUDIT,
+  "TestShortWrite|TestFailedWriteReconciles",
+  "\tif l.stale {\n\t\tif err := l.recover(); err != nil {",
+  "\tif false && l.stale {\n\t\tif err := l.recover(); err != nil {"),
 
  ("degraded health answers 503", AUTH, "TestDegradedHealthStaysHTTP200",
   '\twriteJSON(w, http.StatusOK, map[string]any{\n\t\t"status":  status,',

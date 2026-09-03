@@ -51,6 +51,11 @@ func TestShortWriteLeavesATornTail(t *testing.T) {
 	if logErr == nil {
 		t.Fatal("Log reported success for a record that could not be written")
 	}
+	// A real failed write invalidates the chain, because what landed is not knowable
+	// from inside persist. TestFailedWriteReconcilesAgainstTheLog leans on this.
+	if !l.stale {
+		t.Fatal("a failed write left the chain describing a log it no longer matches")
+	}
 	torn, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)

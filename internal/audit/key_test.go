@@ -1264,3 +1264,92 @@ func TestOverrunRecordsMustCarryTheirOwnDigest(t *testing.T) {
 		t.Fatalf("NewLogger on an overrun holding a tampered record: err=%v, want ErrBrokenChain", err)
 	}
 }
+
+// A write can fail *after* the complete record and its terminator are already on disk.
+// Write reports the bytes it handed to the kernel; the failure surfaces from Close, as a
+// deferred write-back error -- EIO, ENOSPC or EDQUOT on a network- or FUSE-backed volume,
+// and a DATA_DIR bind mount can be either. persist returns that error, so the chain does
+// not advance, while the log has grown by one record.
+//
+// Treating every failed write as a fragment is wrong for exactly that case: the next Log
+// mints the same sequence again and appends it one line further down, so from there every
+// entry sits one position past the sequence its digest was minted for. VerifyChain fails
+// immediately and the next start refuses with ErrBrokenChain -- the same permanent,
+// tampering-flavoured boot failure the short-write fix removed, reached through the other
+// branch of the same if.
+//
+// No portable syscall makes Close fail after a complete write, so the on-disk state is
+// reproduced directly: it is the only thing the two branches differ by, and it is what the
+// next write has to decide from.
+func TestFailedWriteReconcilesAgainstTheLog(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	mustLog(t, l, "auth.login")
+	mustLog(t, l, "admin.user_deleted")
+
+	// Mint record 3 the way persist would -- from this Logger's own key and anchor --
+	// without telling this Logger's chain, which stays at 2.
+	entry := Entry{
+		ID:        "9f3c1d6e-0000-4000-8000-000000000003",
+		Timestamp: time.Now().UTC(),
+		Action:    "auth.logout",
+		UserID:    "user-1",
+		DeviceID:  "device-1",
+		IP:        "127.0.0.1",
+		Details:   "the record whose Close failed",
+	}
+	tail, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadow, err := auditchain.Resume(l.key, recordOf(tail[len(tail)-1], uint64(len(tail))), l.anchor)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	rec, err := shadow.Append(t.Context(), func(auditchain.Record, auditchain.Anchor) error { return nil }, fieldsOf(entry)...)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	entry.PrevHash, entry.Hash = rec.Prev, rec.Hash
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The complete record and its newline land, and then the write fails.
+	logPath := filepath.Join(root, "audit", logFile)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The other half of what that failure leaves behind: Log returned an error, so the
+	// chain was invalidated. It is set here rather than driven, because no portable
+	// syscall makes Close fail after a complete write; TestShortWriteLeavesATornTail
+	// drives a real failed write and pins that the error path sets this.
+	l.stale = true
+
+	// One Log on the still-running Logger. It has to reconcile against the file rather
+	// than mint sequence 3 a second time.
+	mustLog(t, l, "bookmark.create")
+
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("log parses to %d records, want 4", len(entries))
+	}
+	restarted, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if err != nil {
+		t.Fatalf("a failed write became a boot failure: %v", err)
+	}
+	mustVerify(t, restarted, true, "restart after a write that failed with the record on disk")
+	mustVerify(t, l, true, "an append after a write that failed with the record on disk")
+}
