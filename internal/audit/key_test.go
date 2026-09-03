@@ -577,12 +577,26 @@ func TestOverrunIsNotAdoptedWithoutTheKey(t *testing.T) {
 		Hash:      strings.Repeat("ab", 32),
 	}
 	data, _ := json.Marshal(forged)
-	f, err := os.OpenFile(filepath.Join(root, "audit", logFile), os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(root, "audit", logFile)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Write(append(data, '\n'))
-	f.Close()
+	// Checked, because a setup write that half-lands makes this a test of something
+	// else: the forged record would not be in the log and NewLogger would refuse, or
+	// not, for reasons that have nothing to do with the key.
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := l.ReadEntries(0); err != nil {
+		t.Fatal(err)
+	} else if len(after) != len(entries)+1 || after[len(after)-1].ID != "forged" {
+		t.Fatalf("setup did not append the forged record: log holds %d records", len(after))
+	}
 
 	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); !errors.Is(err, auditchain.ErrBrokenChain) {
 		t.Fatalf("NewLogger on a forged overrun: err=%v, want ErrBrokenChain", err)
@@ -885,22 +899,26 @@ func TestHungStoreDelaysTheNextRecordButNeverDropsIt(t *testing.T) {
 // at all. That is the most truncated a log can be, and it must not get a gentler answer
 // than a log truncated to one record: before the check was hoisted above the empty-log
 // short-circuit, the worst case opened and accepted appends.
+//
+// All three are refused. Junk is refused as damage rather than as removal, because that
+// is what it is; the answer is the same boot failure either way.
 func TestEmptyOrCorruptLogWithAMarkIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
+		want     error
 		mutilate func(t *testing.T, logPath string)
 	}{
-		{"zero bytes", func(t *testing.T, p string) {
+		{"zero bytes", auditchain.ErrTruncated, func(t *testing.T, p string) {
 			if err := os.WriteFile(p, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"not json", func(t *testing.T, p string) {
+		{"not json", ErrCorruptLog, func(t *testing.T, p string) {
 			if err := os.WriteFile(p, []byte("not json at all\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"deleted", func(t *testing.T, p string) {
+		{"deleted", auditchain.ErrTruncated, func(t *testing.T, p string) {
 			if err := os.Remove(p); err != nil {
 				t.Fatal(err)
 			}
@@ -915,8 +933,8 @@ func TestEmptyOrCorruptLogWithAMarkIsRefused(t *testing.T) {
 			tc.mutilate(t, filepath.Join(root, "audit", logFile))
 
 			_, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
-			if !errors.Is(err, auditchain.ErrTruncated) {
-				t.Fatalf("NewLogger on a %s log with a mark of 3: err=%v, want ErrTruncated", tc.name, err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("NewLogger on a %s log with a mark of 3: err=%v, want %v", tc.name, err, tc.want)
 			}
 		})
 	}
@@ -997,9 +1015,13 @@ func TestForgedLegacyLogIsNotLaunderedByConverge(t *testing.T) {
 		if rerr != nil {
 			t.Fatal(rerr)
 		}
-		for _, e := range entries {
-			if auditchain.VerifyRecord(restarted.key, recordOf(e, 1)) == nil && strings.HasPrefix(e.ID, "forged-") {
-				t.Fatal("a forged record now carries a digest under the real audit key")
+		// Each record against its own position. Against a constant sequence 1 the check
+		// was vacuous for every record but the first: a re-minted record 2 carries the
+		// digest for sequence 2, which never matches the digest for sequence 1, so a
+		// laundering that spared the first record passed unnoticed.
+		for i, e := range entries {
+			if auditchain.VerifyRecord(restarted.key, recordOf(e, uint64(i+1))) == nil && strings.HasPrefix(e.ID, "forged-") {
+				t.Fatalf("forged record %d now carries a digest under the real audit key", i+1)
 			}
 		}
 	}
@@ -1060,5 +1082,152 @@ func TestConvergeRefusesAMarkedLogThatVerifiesUnderNeitherDigest(t *testing.T) {
 	}
 	if !bytes.Equal(tampered, after) {
 		t.Fatal("the log was converted even though an entry verifies under neither digest")
+	}
+}
+
+// A record and its terminator go out in one Write, but a short write on a full disk, or
+// a crash, leaves the file ending mid-record. The next successful append used to be
+// welded onto that fragment, producing one line that decodes as neither record: the entry
+// that landed was lost, the parsed count sat one below the mark forever, and every
+// subsequent boot died with ErrTruncated telling the operator entries had been removed
+// from the end of the log. Power loss is enough to reach it, and nothing short of editing
+// the log by hand got the server started again.
+func TestTornWriteDoesNotMergeIntoTheNextRecord(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+
+	// A torn write: the record's bytes land, the terminating newline does not. The chain
+	// did not advance and the mark was not saved, so this state alone is harmless.
+	logPath := filepath.Join(root, "audit", logFile)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":"torn","action":"admin.user`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The running logger cannot have seen it, so it has to cope the way a fresh one does.
+	restarted := newTestLogger(t, root)
+
+	// The next successful append is where the damage used to happen.
+	want := mustLog(t, restarted, "auth.login")
+
+	entries, err := restarted.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("log parses to %d records, want 4: the append merged into the fragment", len(entries))
+	}
+	if entries[3].Hash != want.Hash {
+		t.Fatalf("the record that followed the fragment is not the one Log wrote")
+	}
+	mustVerify(t, restarted, true, "an append after a torn write")
+
+	// And the server still starts, because the fragment changed no record count.
+	again, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if err != nil {
+		t.Fatalf("a torn write became a boot failure: %v", err)
+	}
+	mustVerify(t, again, true, "restart after a torn write")
+}
+
+// Damage and removal both leave the parsed count below the mark, and the log used to
+// report both as ErrTruncated -- "entries have been removed from the end of the log",
+// which accuses an operator of tampering for a corrupted block. They must be told apart:
+// the cause is different and so is the remedy. Both still refuse to boot.
+func TestCorruptLineIsNotReportedAsTruncation(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the middle record's line rather than removing it: the file still holds
+	// three lines, but only two of them decode.
+	var buf bytes.Buffer
+	for i, e := range entries {
+		if i == 1 {
+			buf.WriteString("{\"id\":\"half-a-rec\n")
+			continue
+		}
+		b, _ := json.Marshal(e)
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(root, "audit", logFile), buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if !errors.Is(err, ErrCorruptLog) {
+		t.Fatalf("NewLogger on a log with a corrupt line: err=%v, want ErrCorruptLog", err)
+	}
+	if errors.Is(err, auditchain.ErrTruncated) {
+		t.Fatalf("damage was reported as records removed from the end: %v", err)
+	}
+
+	// Removal, by contrast, is still truncation.
+	var kept bytes.Buffer
+	for _, e := range entries[:2] {
+		b, _ := json.Marshal(e)
+		kept.Write(b)
+		kept.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(root, "audit", logFile), kept.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if !errors.Is(err, auditchain.ErrTruncated) {
+		t.Fatalf("NewLogger on a shortened log: err=%v, want ErrTruncated", err)
+	}
+}
+
+// Every record past the mark must carry its own digest, not merely link to its
+// neighbours. Resume already refuses a bad digest on the *tail*, so a forged record
+// appended at the end is caught whether or not recover() checks the run -- which left the
+// per-record check in the overrun branch doing nothing any test could see. Tamper with a
+// record in the middle of the run instead, leaving every hash field alone so the links
+// still join and the tail is genuine: only the per-record check can see it.
+func TestOverrunRecordsMustCarryTheirOwnDigest(t *testing.T) {
+	root := t.TempDir()
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout", "auth.login"} {
+		mustLog(t, l, a)
+	}
+	entries, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite record 3's content and leave its digest and both links untouched.
+	entries[2].Details = "tampered"
+	writeLog(t, root, entries)
+
+	// Mark at one, so records two through four are the overrun run and record four --
+	// the tail Resume checks -- is untouched and genuine.
+	st, _ := json.Marshal(state{Count: 1, Hash: entries[0].Hash})
+	if err := os.WriteFile(filepath.Join(root, "config", stateFile), st, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if auditchain.VerifyRecord(l.key, recordOf(entries[3], 4)) != nil {
+		t.Fatal("test is not isolating the per-record check: the tail no longer verifies")
+	}
+	if recordOf(entries[2], 3).Prev != entries[1].Hash || entries[3].PrevHash != entries[2].Hash {
+		t.Fatal("test is not isolating the per-record check: the predecessor links no longer join")
+	}
+
+	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); !errors.Is(err, auditchain.ErrBrokenChain) {
+		t.Fatalf("NewLogger on an overrun holding a tampered record: err=%v, want ErrBrokenChain", err)
 	}
 }

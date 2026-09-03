@@ -81,6 +81,30 @@ ABLATIONS = [
   "\tif version == version0 {\n\t\treturn chainHash(l.legacyKey,",
   "\tif false {\n\t\treturn chainHash(l.legacyKey,"),
 
+ ("torn tail merged into the next record", AUDIT, "TestTornWrite",
+  "\t\tline := append(data, '\\n')\n\t\tif l.tornTail {",
+  "\t\tline := append(data, '\\n')\n\t\tif false && l.tornTail {"),
+
+ ("torn tail never noticed, so the next append merges onto it", AUDIT, "TestTornWrite",
+  "\tsc.torn = len(data) > 0 && data[len(data)-1] != '\\n'",
+  "\tsc.torn = false"),
+
+ ("a corrupt line is reported as a removed record", AUDIT, "TestCorruptLineIsNotReportedAsTruncation",
+  "\tif uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {",
+  "\tif false && uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {"),
+
+ ("undecodable lines counted as absent records", AUDIT, "TestCorruptLineIsNotReportedAsTruncation|TestEmptyOrCorrupt",
+  "\t\t\tsc.corrupt++\n\t\t\tcontinue",
+  "\t\t\tcontinue"),
+
+ ("overrun records not verified against the key", AUDIT, "TestOverrunRecordsMustCarryTheirOwnDigest|TestOverrunIsNotAdopted",
+  "\t\t\tif err := auditchain.VerifyRecord(l.key, rec); err != nil {",
+  "\t\t\tif err := error(nil); err != nil {"),
+
+ ("a failed audit write is discarded again", SERVER, "TestAuditWriteFailureIsNotSilent",
+  "\tif _, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details); err != nil {",
+  "\t_, _ = s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err := error(nil); err != nil {"),
+
  ("sync signature optional again", ADMIN, "TestDirectorySync",
   '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
   '\tif s.cfg.SyncSecret == "" || r.Header.Get("X-KySignOn-Signature") == "" {\n\t\twriteJSON(w, http.StatusOK, map[string]bool{"ok": true})\n\t\treturn\n\t}\n\tmac := hmac.New'),
@@ -104,12 +128,12 @@ ABLATIONS = [
   "\tif err := s.store.CreateAccount(admin); err != nil {"),
 
  ("recovery ignores suspension", AUTH, "TestRecoveryRefusesSuspendedAccount",
-  '\tif acc.Status != "active" {\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_failed"',
-  '\tif false {\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_failed"'),
+  '\tif acc.Status != "active" {\n\t\ts.auditEvent(r, "auth.recovery_failed"',
+  '\tif false {\n\t\ts.auditEvent(r, "auth.recovery_failed"'),
 
  ("recovery unmetered", AUTH, "TestRecoveryLocksOut",
-  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_blocked"',
-  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log(r.Context(), "auth.recovery_blocked"'),
+  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\ts.auditEvent(r, "auth.recovery_blocked"',
+  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\ts.auditEvent(r, "auth.recovery_blocked"'),
 
  ("constant decoy salt", AUTH, "TestLoginParamsDoesNotReveal",
   '\t\t\t"salt":       hex.EncodeToString(mac.Sum(nil)[:16]),',

@@ -57,10 +57,10 @@ Rules for anyone touching this package:
   alarm on every interrupted write, and false alarms are how real alarms get ignored.
 - **The audit write is not the caller's to cancel.** `Log` takes a `context.Context` for
   its values, then strips the cancellation with `context.WithoutCancel` and applies its
-  own timeout. Handlers pass `r.Context()`, which dies when the client hangs up, and every
-  call site discards `Log`'s error — so honouring it would let a client suppress the record
-  of what it just did by aborting the connection. Never pass a caller's context straight to
-  `auditchain.Append`.
+  own timeout. Handlers pass `r.Context()`, which dies when the client hangs up, so
+  honouring it would put the record of what a client just did under that client's control:
+  hang up after the handler has acted and the entry is never written. Never pass a caller's
+  context straight to `auditchain.Append`.
 - **Derive that context *after* `l.mu.Lock()`, never before.** `l.mu` is a plain mutex no
   context can interrupt, so a deadline started above it is spent waiting on it: a caller
   queued behind a hung store reaches `Append` with a dead context and discards its record.
@@ -73,6 +73,27 @@ Rules for anyone touching this package:
 - **A mark write that fails is reported, never rolled back.** The record is already on
   disk, so refusing the append would leave the chain behind the log and fork it on the next
   call. `Log` returns the error; the chain advances anyway.
+- **A torn write cannot merge with the next record.** A record and its terminator go out
+  in one `Write`, which is not a promise: a short write on a full disk, or a crash, leaves
+  the file ending mid-record. `persist` therefore terminates an unterminated tail before
+  appending, so a fragment stays a line of its own — undecodable, but inert, because a
+  non-record changes no record count. Without this the next append was welded onto the
+  fragment, the entry that landed was lost, and every later boot died accusing the operator
+  of removing entries. Power loss was enough to reach it. Nothing is ever removed from the
+  log to achieve this.
+- **Damage is not truncation, and is not reported as it.** A line that does not decode
+  leaves the parsed count below the mark exactly as a deleted record does. `scanLog`
+  counts those lines and `recover` returns `ErrCorruptLog` when they explain the shortfall,
+  naming a torn write or a corrupted block and the remedy for one. `ErrTruncated` keeps its
+  meaning: records really are gone. Both are boot failures — only the accusation differs,
+  and false accusations are how real alarms get ignored.
+- **A failed audit write is never discarded.** `internal/api` routes all 28 call sites
+  through `Server.auditEvent`, which on failure logs to stderr (per `LOGGING.md`) and
+  increments the `auditWriteFailures` counter `/api/health` reports, flipping `status` to
+  `degraded`. It does not fail the request: every call site logs after the action has
+  already happened, so a 500 would neither undo it nor restore the record, and would invite
+  a retry that repeats it. Health stays HTTP 200 while degraded so a full disk cannot become
+  an orchestrator-driven outage. Never write `_, _ = s.audit.Log(...)`.
 - **A mark behind the log is caught up; a mark ahead of it is fatal.** On start, every
   record past the mark is verified against the key and against its predecessor, then the
   mark advances to the log's tail — a config volume that was briefly unwritable recovers.

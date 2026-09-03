@@ -50,6 +50,13 @@ const (
 	legacyDefaultSecret = "kybookmarks-default-hmac-secret"
 )
 
+// ErrCorruptLog reports a log holding lines that do not decode. It is deliberately not
+// ErrTruncated: damage and removal both leave fewer records than the mark counted, but
+// they have different causes and different remedies, and calling a torn write "entries
+// have been removed from the end of the log" accuses an operator of tampering for a
+// power cut.
+var ErrCorruptLog = errors.New("audit: log holds lines that do not decode")
+
 // Entry represents a single audit event with cryptographic hash chaining.
 type Entry struct {
 	ID        string    `json:"id"`
@@ -100,6 +107,11 @@ type Logger struct {
 	chain     *auditchain.Chain
 	anchor    auditchain.Anchor
 	count     int
+
+	// tornTail records that the log does not end in a newline, so the next append must
+	// terminate the fragment before adding to it. Guarded by mu, like every other field
+	// the append path touches.
+	tornTail bool
 }
 
 // NewLogger initializes the audit logger. dataDir holds the log; configDir holds the
@@ -198,10 +210,12 @@ func decodeKey(s string) ([]byte, error) {
 // recover restores the chain tail and, on a genuine first keying, anchors the legacy
 // tail with a keyed marker so those entries can no longer be rewritten.
 func (l *Logger) recover() error {
-	entries, err := l.ReadEntries(0)
+	sc, err := l.scanLog(0)
 	if err != nil {
 		return fmt.Errorf("failed to read audit log: %w", err)
 	}
+	entries := sc.entries
+	l.tornTail = sc.torn
 
 	st, err := l.loadState()
 	if err != nil {
@@ -235,12 +249,28 @@ func (l *Logger) recover() error {
 			"for the auditor", auditchain.ErrBrokenChain, l.filePath, len(entries), l.statePath)
 	}
 
+	// A line that does not decode is damage: a torn write, a corrupted block, an editor.
+	// It leaves the parsed count below the mark exactly as a deleted record does, so
+	// without this the operator was told entries had been removed from the end -- an
+	// accusation of tampering -- for a power cut. Refusing either way is the point; only
+	// the cause and the remedy differ, and naming the wrong one is how real alarms get
+	// ignored. TestCorruptLineIsNotReportedAsTruncation holds the two apart.
+	if uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {
+		return fmt.Errorf("%w: %s parses to %d records but the mark in %s counts %d, "+
+			"and %d line(s) in it do not decode. That is damage, not entries removed from the end: "+
+			"a write torn by a full disk or a crash, or a corrupted block. This server will not start. "+
+			"Keep the damaged file for the auditor, restore the log from backup, or move both files "+
+			"aside to begin a new chain",
+			ErrCorruptLog, l.filePath, len(entries), l.statePath, l.anchor.Count, sc.corrupt)
+	}
+
 	// Above the empty-log short-circuit, deliberately. A log emptied to zero bytes, one
 	// whose lines no longer decode, and one deleted outright all read as no entries at
 	// all -- the most truncated a log can be. Short-circuiting past this check answered
 	// the worst case with a fresh chain that accepted appends, while a log truncated to a
 	// single record was refused. Deleting the file and emptying it are the same act with
-	// the same effect, so they get the same answer.
+	// the same effect, so they get the same answer. So does a log whose lines no longer
+	// decode -- one line above, named as the damage it is rather than as removal.
 	//
 	// Resuming here would mint sequence numbers that already exist -- a fork that persists
 	// cleanly and can never verify again -- so refuse to start rather than append over the
@@ -380,6 +410,8 @@ func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 	if err := writeFileAtomic(l.filePath, buf); err != nil {
 		return nil, err
 	}
+	// The rewrite terminated every line, including any fragment the old file ended in.
+	l.tornTail = false
 
 	l.anchor = anchor
 	if err := l.saveState(); err != nil {
@@ -413,11 +445,15 @@ func (l *Logger) legacyVersions(entries []Entry) ([]int, bool) {
 // Log writes a new event to the audit trail.
 //
 // ctx is accepted for its values, but its cancellation is deliberately dropped. Handlers
-// pass r.Context(), which dies the instant the client hangs up, and every call site
-// discards Log's error -- so honouring it would let a client suppress the record of what
-// it just did by aborting the connection after the handler had already acted. The records
-// a brute-forcing client most wants gone, auth.login_failed and auth.recovery_blocked, are
-// exactly the ones written that way. The audit write is not the caller's to cancel.
+// pass r.Context(), which dies the instant the client hangs up, so honouring it would put
+// the record of what a client just did under that client's control: abort the connection
+// after the handler has acted and the entry is never written. The records a brute-forcing
+// client most wants gone, auth.login_failed and auth.recovery_blocked, are exactly the
+// ones written that way. The audit write is not the caller's to cancel.
+//
+// The error is the caller's to notice: it reports the record write and the mark write,
+// and internal/api routes every call site through Server.auditEvent so a failure reaches
+// the operator rather than the floor.
 //
 // The bound Append needs is a bound on a hung store, not a channel the remote end holds,
 // so it is imposed here: once, where no future handler can pass the wrong context.
@@ -459,8 +495,31 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		if _, err := f.Write(append(data, '\n')); err != nil {
+
+		// A record and its terminator go out in one Write, but that is not a promise the
+		// file ends in a newline: a short write on a full disk, or a crash, leaves the
+		// file ending mid-record. Appending straight onto that fragment welds the two
+		// into a single line that decodes as neither, so the record that *did* land is
+		// lost and the parsed count sits one below the mark forever -- a permanent boot
+		// failure reported as truncation. Terminating the fragment first keeps it a line
+		// of its own: undecodable, but inert, because a non-record changes no count.
+		// Nothing is removed. TestTornWriteDoesNotMergeIntoTheNextRecord covers this.
+		line := append(data, '\n')
+		if l.tornTail {
+			line = append([]byte{'\n'}, line...)
+		}
+		n, err := f.Write(line)
+		if err != nil {
+			// A partial write is the fragment this exists to contain, so record it
+			// before returning: the next append has to terminate it.
+			l.tornTail = l.tornTail || n > 0
+			f.Close()
+			return err
+		}
+		l.tornTail = false
+		if err := f.Close(); err != nil {
+			// The bytes may not have reached the file. Assume the worst about the tail.
+			l.tornTail = true
 			return err
 		}
 
@@ -574,31 +633,52 @@ func (l *Logger) ReadEntries(limit int) ([]Entry, error) {
 	return l.readEntries(limit)
 }
 
-// readEntries is ReadEntries without the lock, for callers that already hold it.
-func (l *Logger) readEntries(limit int) ([]Entry, error) {
+// scan is what one pass over the log file found.
+type scan struct {
+	entries []Entry
+	// corrupt counts non-empty lines that did not decode. Skipping them silently made
+	// damage indistinguishable from removal: both leave the parsed count below the mark.
+	corrupt int
+	// torn reports that the file does not end in a newline, so its last line is a
+	// record that was only partly written.
+	torn bool
+}
+
+// scanLog parses the log and reports what it could not parse.
+func (l *Logger) scanLog(limit int) (scan, error) {
+	var sc scan
 	data, err := os.ReadFile(l.filePath)
 	if errors.Is(err, os.ErrNotExist) {
-		return []Entry{}, nil
+		sc.entries = []Entry{}
+		return sc, nil
 	}
 	if err != nil {
-		return nil, err
+		return scan{}, err
 	}
+	sc.torn = len(data) > 0 && data[len(data)-1] != '\n'
 
-	var entries []Entry
 	for _, line := range splitLines(data) {
 		if len(line) == 0 {
 			continue
 		}
 		var e Entry
-		if err := json.Unmarshal(line, &e); err == nil {
-			entries = append(entries, e)
+		if err := json.Unmarshal(line, &e); err != nil {
+			sc.corrupt++
+			continue
 		}
+		sc.entries = append(sc.entries, e)
 	}
 
-	if limit > 0 && len(entries) > limit {
-		entries = entries[len(entries)-limit:]
+	if limit > 0 && len(sc.entries) > limit {
+		sc.entries = sc.entries[len(sc.entries)-limit:]
 	}
-	return entries, nil
+	return sc, nil
+}
+
+// readEntries is ReadEntries without the lock, for callers that already hold it.
+func (l *Logger) readEntries(limit int) ([]Entry, error) {
+	sc, err := l.scanLog(limit)
+	return sc.entries, err
 }
 
 // VerifyChain checks the integrity of the audit chain against the recorded anchor.

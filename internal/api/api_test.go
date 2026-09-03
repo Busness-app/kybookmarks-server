@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
@@ -313,5 +315,55 @@ func TestAbortedRequestStillAudits(t *testing.T) {
 	}
 	if got := after[len(after)-1].Action; got != "auth.login_failed" {
 		t.Fatalf("last audit action = %q, want auth.login_failed", got)
+	}
+}
+
+// An audit write that fails must not vanish. Every call site used to be `_, _ =`, so a
+// full or read-only audit volume erased auth.login_failed, admin.user_deleted and
+// devices.paired while the request returned its normal status and nothing reached the
+// server log -- the same suppression Log's context handling exists to prevent, reached
+// through the filesystem instead of a dropped connection.
+func TestAuditWriteFailureIsNotSilent(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Make the audit log unwritable in a way root cannot ignore: put a directory where
+	// the log file goes, so O_WRONLY fails with EISDIR whatever the uid.
+	if err := os.MkdirAll(filepath.Join(srv.cfg.DataDir, "audit", "audit.log"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// The request is deliberately unaffected: the action has already happened, so a 500
+	// would neither undo it nor restore the record.
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	if !strings.Contains(logged.String(), "auth.login_failed") {
+		t.Fatalf("a failed audit write reached no operator: server log held %q", logged.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	var health struct {
+		Status             string `json:"status"`
+		AuditWriteFailures uint64 `json:"auditWriteFailures"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "degraded" || health.AuditWriteFailures == 0 {
+		t.Fatalf("health reported status=%q failures=%d after a failed audit write",
+			health.Status, health.AuditWriteFailures)
 	}
 }

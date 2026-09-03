@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
@@ -47,6 +49,35 @@ type Server struct {
 
 	// saltKey derives the decoy login salt served for unknown usernames.
 	saltKey []byte
+
+	// auditFailures counts audit writes that did not land, for /api/health.
+	auditFailures atomic.Uint64
+}
+
+// auditEvent records an event on the tamper-evident chain, and refuses to let a failure
+// of that write be silent.
+//
+// It does not fail the request, and that is a judgement call rather than an oversight.
+// Every call site logs *after* the thing has already happened: the user is deleted, the
+// session is issued, the password is rejected. A 500 at that point would neither undo the
+// action nor restore the record, and it would invite a retry that repeats it. What was
+// wrong before was not the status code, it was that 28 call sites wrote `_, _ =` and a
+// full or read-only audit volume erased admin.user_deleted, devices.paired and every
+// auth.login_failed with nothing reaching the operator at all -- the same suppression
+// Log's context handling exists to prevent, reached through the filesystem.
+//
+// So the failure gets two channels an operator already watches: stderr, where LOGGING.md
+// sends security events, and /api/health, for operators who poll rather than tail. Health
+// stays HTTP 200 while degraded on purpose: a 503 would let a full disk become an
+// orchestrator-driven outage. TestAuditWriteFailureIsNotSilent covers both channels.
+//
+// Details are not logged: they carry usernames, and LOGGING.md keeps application logs to
+// coarse actor identifiers. The chain is where the detail belongs.
+func (s *Server) auditEvent(r *http.Request, action, userID, deviceID, details string) {
+	if _, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details); err != nil {
+		s.auditFailures.Add(1)
+		log.Printf("audit: %s for user %q was NOT recorded: %v", action, userID, err)
+	}
 }
 
 // loadOrCreateSaltKey keeps the decoy salt stable across restarts, so an
