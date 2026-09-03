@@ -6,15 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/auditchain"
-	"time"
 )
 
 // newTestLogger builds a logger over fresh data/config dirs under root.
@@ -175,24 +178,96 @@ func TestTruncationIsRefusedOnRestart(t *testing.T) {
 	}
 }
 
-// Deleting the state file is tampering, not a fresh start.
+// Deleting the state file is tampering, not a fresh start, and the server refuses to
+// start rather than running on without it.
+//
+// It used to start and report the log as invalid forever. That reads like a detector and
+// is not one: with the mark gone there is nothing left to compare the log against, so the
+// alarm is on whatever the log contains — a truncated log and an intact one produce the
+// same output, which is asserted below. Refusing is also what this server already does for
+// a log emptied, junk-filled or deleted, and a missing mark is worse than any of them
+// because it is what disarms those checks.
 func TestMissingStateIsNotSelfHealed(t *testing.T) {
 	root := t.TempDir()
 	l := newTestLogger(t, root)
-	mustLog(t, l, "auth.login")
-
-	if err := os.Remove(filepath.Join(root, "config", stateFile)); err != nil {
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+	statePath := filepath.Join(root, "config", stateFile)
+	logPath := filepath.Join(root, "audit", logFile)
+	intact, err := os.ReadFile(logPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	restarted := newTestLogger(t, root)
-	mustVerify(t, restarted, false, "state file deleted")
 
-	// Appending must not recreate the mark: that would launder a truncated log.
-	mustLog(t, restarted, "auth.logout")
-	mustVerify(t, restarted, false, "state file deleted, then appended to")
-	if _, err := os.Stat(filepath.Join(root, "config", stateFile)); !os.IsNotExist(err) {
-		t.Fatal("append recreated the deleted audit state")
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
 	}
+
+	// Repeatable: restarting does not talk the logger into accepting it. The message has
+	// to name the mark and give the operator both ways out, because Resume also refuses a
+	// log it cannot place — with an error about digests that says nothing about which file
+	// is missing or what to do about it. Reaching that refusal instead of this one is a
+	// regression even though both stop the boot.
+	for _, why := range []string{"first restart", "second restart"} {
+		_, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+		if !errors.Is(err, auditchain.ErrBrokenChain) {
+			t.Fatalf("%s with the mark deleted: err=%v, want ErrBrokenChain", why, err)
+		}
+		for _, want := range []string{
+			statePath,
+			"counts none",
+			"Restore the mark",
+			"move both files aside",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: the refusal does not mention %q, so it is not the missing-mark answer: %v", why, want, err)
+			}
+		}
+	}
+
+	// And the mark is not recreated by the attempt, which would bless whatever is on disk.
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("a failed start recreated the deleted audit state (err=%v)", err)
+	}
+
+	// The reason it must refuse: with the mark gone, truncating the log changes nothing
+	// about the answer. Any response other than refusal is content-free.
+	lines := splitLines(intact)
+	if err := os.WriteFile(logPath, []byte(string(lines[0])+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, truncErr := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if truncErr == nil {
+		t.Fatal("a truncated log with no mark was accepted")
+	}
+
+	// Restoring the mark restores the distinction, which is the whole point of keeping it
+	// outside dataDir.
+	if err := os.WriteFile(logPath, intact, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := json.Marshal(state{Count: 3, Hash: readTailHash(t, logPath)})
+	if err := os.WriteFile(statePath, restored, 0600); err != nil {
+		t.Fatal(err)
+	}
+	recovered := newTestLogger(t, root)
+	mustVerify(t, recovered, true, "mark restored from backup")
+}
+
+// readTailHash returns the Hash of the last entry in the log at path.
+func readTailHash(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := splitLines(data)
+	var e Entry
+	if err := json.Unmarshal(lines[len(lines)-1], &e); err != nil {
+		t.Fatal(err)
+	}
+	return e.Hash
 }
 
 // The mark records the furthest the chain ever reached; a stale writer must not lower it.
@@ -636,17 +711,85 @@ func TestOverrunRunMustChain(t *testing.T) {
 	}
 }
 
-// appendTimeout is only sound because the chain lock is uncontended: Log holds l.mu
-// across the whole Append and l.chain is driven from nowhere else. A second call site
-// would turn acquire into a real queue, and the deadline would start discarding records
-// again -- which is the bug TestHungStoreDelaysTheNextRecordButNeverDropsIt covers.
+// appendTimeout is a real bound only because acquire never contends: Log holds l.mu
+// across the whole Append, and l.chain is used from exactly one place in the package.
+// A second call site would put a waiter behind a hung store with no way to shed, and
+// the deadline would start firing on a queue instead of on a fault.
 func TestChainIsDrivenFromOneCallSite(t *testing.T) {
-	src, err := os.ReadFile("audit.go")
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Glob failed: %v", err)
 	}
-	if n := bytes.Count(src, []byte("l.chain.")); n != 1 {
-		t.Fatalf("audit.go drives l.chain from %d call sites, want 1: a second one puts an unbounded wait behind appendTimeout", n)
+	var sites []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, ".chain.") {
+				sites = append(sites, fmt.Sprintf("%s:%d", f, i+1))
+			}
+		}
+	}
+	if len(sites) != 1 {
+		t.Fatalf("the chain is driven from %d places %v; appendTimeout is only a bound while there is one", len(sites), sites)
+	}
+}
+
+// A comment naming a test it is not backed by is worse than no comment: it reads as
+// evidence. Every Test... identifier mentioned in this package's non-test source must
+// name a test that exists somewhere in the repository.
+func TestCommentsNameRealTests(t *testing.T) {
+	defined := map[string]bool{}
+	var cited []string
+	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
+
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range regexp.MustCompile(`func (Test[A-Z]\w*)\(`).FindAllStringSubmatch(string(data), -1) {
+			defined[m[1]] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir failed: %v", err)
+	}
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, n := range name.FindAllString(line, -1) {
+				if !defined[n] {
+					cited = append(cited, fmt.Sprintf("%s:%d cites %s", f, i+1, n))
+				}
+			}
+		}
+	}
+	if len(cited) > 0 {
+		t.Fatalf("comments name tests that do not exist: %v", cited)
 	}
 }
 
@@ -776,5 +919,146 @@ func TestEmptyOrCorruptLogWithAMarkIsRefused(t *testing.T) {
 				t.Fatalf("NewLogger on a %s log with a mark of 3: err=%v, want ErrTruncated", tc.name, err)
 			}
 		})
+	}
+}
+
+// converge re-mints a legacy log under the real key. Deciding to do that on the log's
+// own contents alone hands an attacker with write access to dataDir a laundering
+// service: legacyDefaultSecret is published in this repository, so anyone can author a
+// chain that verifies under it, and converge used to accept any such chain whenever the
+// mark was present but merely counted no more entries than the log held.
+//
+// The real records are replaced by attacker-authored ones, the next boot re-mints them
+// under the real HMAC key, VerifyChain returns true, and the mark is overwritten to
+// match. The forgery is then indistinguishable from a genuine log.
+//
+// The mark is the only thing outside the attacker's reach, so it is what converge must
+// consult: both the count and the tail hash.
+func TestForgedLegacyLogIsNotLaunderedByConverge(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "audit")
+	configDir := filepath.Join(root, "config")
+
+	// A real chain, written by the real logger under its real key.
+	l := newTestLogger(t, root)
+	for _, a := range []string{"auth.login", "admin.user_deleted", "auth.logout"} {
+		mustLog(t, l, a)
+	}
+	real, err := l.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(real) != 3 {
+		t.Fatalf("setup wrote %d records, want 3", len(real))
+	}
+
+	// The attacker reaches dataDir only. The key and the mark are in configDir and are
+	// never read or written here.
+	forger := &Logger{legacyKey: []byte(legacyDefaultSecret)}
+	prev := genesisHash
+	var buf bytes.Buffer
+	var forged []Entry
+	for i, a := range []string{"auth.login", "admin.user_created", "auth.logout"} {
+		e := Entry{
+			ID:        "forged-" + a,
+			Timestamp: time.Unix(int64(1800000000+i), 0).UTC(),
+			Action:    a,
+			UserID:    "attacker",
+			PrevHash:  prev,
+		}
+		e.Hash = forger.legacyHash(e, version0)
+		prev = e.Hash
+		b, _ := json.Marshal(e)
+		buf.Write(b)
+		buf.WriteByte('\n')
+		forged = append(forged, e)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, logFile), buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same record count as the real log, so a count-only check cannot see this.
+	if len(forged) != len(real) {
+		t.Fatalf("the exploit needs an equal-length substitution, got %d for %d", len(forged), len(real))
+	}
+	before, err := os.ReadFile(filepath.Join(configDir, stateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The next boot must not bless this. Either it refuses outright, or it starts and
+	// reports the log as invalid — what it must never do is re-mint the forged records
+	// under the real key and then say they verify.
+	restarted, err := NewLogger(dataDir, configDir, "")
+	if err == nil {
+		mustVerify(t, restarted, false, "log replaced with one chained under the published constant")
+
+		entries, rerr := restarted.ReadEntries(0)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		for _, e := range entries {
+			if auditchain.VerifyRecord(restarted.key, recordOf(e, 1)) == nil && strings.HasPrefix(e.ID, "forged-") {
+				t.Fatal("a forged record now carries a digest under the real audit key")
+			}
+		}
+	}
+
+	after, err := os.ReadFile(filepath.Join(configDir, stateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the mark was overwritten to match the forged log:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// converge must consult the mark *and* the digests. The mark says how long the log is and
+// what its tail is; it says nothing about the entries in between, so a log whose middle
+// has been rewritten still matches a mark that names its count and tail. legacyVersions is
+// what refuses that, and it has to keep doing so even when the mark agrees.
+func TestConvergeRefusesAMarkedLogThatVerifiesUnderNeitherDigest(t *testing.T) {
+	root := t.TempDir()
+	legacy := writeLegacyLog(t, root, "auth.login", "admin.user_deleted", "auth.logout")
+
+	// Rewrite the content of a middle entry and leave every hash alone. The links still
+	// join up and the tail is untouched, so the mark below names this file exactly.
+	legacy[1].Details = "tampered"
+	var buf bytes.Buffer
+	for _, e := range legacy {
+		b, _ := json.Marshal(e)
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	logPath := filepath.Join(root, "audit", logFile)
+	if err := os.WriteFile(logPath, buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tampered, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A mark that agrees with the log on both facts it records.
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	mark, _ := json.Marshal(state{Count: len(legacy), Hash: legacy[len(legacy)-1].Hash})
+	if err := os.WriteFile(filepath.Join(root, "config", stateFile), mark, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Converting this would re-mint a tampered entry under the real audit key. Refusing
+	// to open is fine; rewriting the log is not.
+	reopened, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), "")
+	if err == nil {
+		mustVerify(t, reopened, false, "a marked log with a rewritten middle entry")
+	}
+	after, rerr := os.ReadFile(logPath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !bytes.Equal(tampered, after) {
+		t.Fatal("the log was converted even though an entry verifies under neither digest")
 	}
 }

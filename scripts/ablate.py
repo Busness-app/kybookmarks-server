@@ -35,13 +35,9 @@ ABLATIONS = [
   "\tif uint64(len(entries)) < l.anchor.Count {",
   "\tif false && uint64(len(entries)) < l.anchor.Count {"),
 
- ("self-heal missing state", AUDIT, "TestMissingState",
-  "\tif st == nil && len(entries) > 0 && l.anchor.Count == 0 {\n\t\tl.stateMissing = true\n\t}",
-  "\tif false {\n\t\tl.stateMissing = true\n\t}"),
-
- ("state recreated by append", AUDIT, "TestMissingState",
-  "\t\tif a.Count > l.anchor.Count && !l.stateMissing {",
-  "\t\tif a.Count > l.anchor.Count {"),
+ ("missing mark accepted instead of refused", AUDIT, "TestMissingState",
+  "\tif st == nil && len(entries) > 0 && l.anchor.Count == 0 {",
+  "\tif false && st == nil && len(entries) > 0 && l.anchor.Count == 0 {"),
 
  ("mark never catches up after an interrupted write", AUDIT, "TestStateCatchesUp|TestTruncation",
   "\toverrun := l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count",
@@ -69,7 +65,15 @@ ABLATIONS = [
  ("non-atomic state write", AUDIT, "TestStateIsReplaced|TestVerifyChainIsNotRaced",
   "\treturn writeFileAtomic(l.statePath, data)", "\treturn os.WriteFile(l.statePath, data, 0600)"),
 
- ("converge blesses a log that verifies under neither digest", AUDIT, "TestConvergeRefuses|TestForgery|TestLegacyLog",
+ ("converge trusts the log instead of the mark", AUDIT, "TestForgedLegacyLog",
+  "\t} else if st.Count != len(entries) || st.Hash != entries[len(entries)-1].Hash {",
+  "\t} else if false {"),
+
+ ("converge checks the mark's count but not its tail hash", AUDIT, "TestForgedLegacyLog",
+  "\t} else if st.Count != len(entries) || st.Hash != entries[len(entries)-1].Hash {",
+  "\t} else if st.Count < len(entries) {"),
+
+ ("converge blesses a log that verifies under neither digest", AUDIT, "TestConvergeRefuses|TestForgedLegacyLog|TestLegacyLog",
   "\tversions, ok := l.legacyVersions(entries)\n\tif !ok {\n\t\treturn entries, nil\n\t}",
   "\tversions, _ := l.legacyVersions(entries)"),
 

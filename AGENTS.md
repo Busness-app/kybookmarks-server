@@ -34,9 +34,19 @@ Rules for anyone touching this package:
   the write and verify paths cannot drift.
 - **The legacy tail is anchored** by a single keyed `audit.rekeyed` marker, written only on
   a genuine first keying (state absent *and* every entry `v: 0`).
-- **Do not self-heal.** A missing `audit.state` alongside keyed entries is tampering: the
-  logger refuses to recreate it and `VerifyChain` reports it. The high-water mark never
-  decreases.
+- **Do not self-heal. A missing `audit.state` is a boot failure.** With the mark gone
+  there is nothing left to compare the log against, so a truncated log and an intact one
+  are the same file — the previous behaviour, starting anyway and having `VerifyChain`
+  report it forever, was an alarm that stayed on whatever the log contained. `NewLogger`
+  returns `ErrBrokenChain` naming both files, in the same words `kypassword-server` uses,
+  and does not recreate the mark. The high-water mark never decreases.
+- **A legacy log is re-minted only when the mark attests to it.** `converge` requires the
+  same record count *and* the same tail hash before rewriting a log under the audit key.
+  Verifying under `legacyHash` is not enough on its own: `v: 0` is keyed with
+  `legacyDefaultSecret`, published in this repository, so anyone who can write `DATA_DIR`
+  can author a chain that verifies as `v: 0`. The mark is the only input outside that
+  directory, which is what makes it the thing to ask. The one case with no mark to ask is
+  a genuine first run: every entry `v: 0` and no mark ever written.
 - **Order writes: entry first, state second.** A crash between them under-counts by one,
   which fails open for the newest entry only. The reverse order raises a false truncation
   alarm on every interrupted write, and false alarms are how real alarms get ignored.

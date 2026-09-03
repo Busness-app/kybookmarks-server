@@ -100,11 +100,6 @@ type Logger struct {
 	chain     *auditchain.Chain
 	anchor    auditchain.Anchor
 	count     int
-
-	// stateMissing records that the high-water mark was absent while an already
-	// converted log existed. Recreating it would let an append after a truncation
-	// erase the evidence.
-	stateMissing bool
 }
 
 // NewLogger initializes the audit logger. dataDir holds the log; configDir holds the
@@ -221,11 +216,23 @@ func (l *Logger) recover() error {
 	}
 	l.count = len(entries)
 
-	// No state file, and nothing was converted: the log was already in the shared
-	// format, so the mark was removed rather than never written. Leave it absent;
-	// VerifyChain reports it rather than papering over it.
+	// A log with no mark cannot be placed. The mark is the only record of how long the
+	// log is meant to be, so without it a log with entries removed and one that is intact
+	// are the same file — and the previous answer proved it: after deleting the mark,
+	// truncating the log produced byte-identical output to not truncating it. Running on
+	// with the mark absent left a detector that was on regardless of the log's contents,
+	// which is not a detector.
+	//
+	// This is the same answer kypassword-server gives, in the same words. AGENTS.md
+	// already commits this server to refusing a log emptied, filled with junk or deleted
+	// outright; a missing mark is strictly worse than any of those, because it disarms the
+	// check that catches them, and it was getting the gentlest response of the four.
 	if st == nil && len(entries) > 0 && l.anchor.Count == 0 {
-		l.stateMissing = true
+		return fmt.Errorf("audit: %w: %s holds %d records but the mark in %s counts none. "+
+			"It was removed and recreated empty, or never written; either way a truncated log "+
+			"cannot be told from an intact one, so this server will not start. Restore the mark "+
+			"from backup, or move both files aside to begin a new chain and keep the old pair "+
+			"for the auditor", auditchain.ErrBrokenChain, l.filePath, len(entries), l.statePath)
 	}
 
 	// Above the empty-log short-circuit, deliberately. A log emptied to zero bytes, one
@@ -287,12 +294,6 @@ func (l *Logger) recover() error {
 			prev = rec.Hash
 		}
 		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
-	case l.stateMissing:
-		// The mark was removed from a log already in the shared format, so there is no
-		// anchor to resume against. Resume from the log's own tail, but leave l.anchor
-		// zero: appending has to keep working, and VerifyChain has to go on reporting
-		// the absent mark rather than being handed one this process invented.
-		anchor = auditchain.Anchor{Count: last.Seq, Hash: last.Hash}
 	}
 
 	if l.chain, err = auditchain.Resume(l.key, last, anchor); err != nil {
@@ -309,9 +310,21 @@ func (l *Logger) recover() error {
 // package's digests. It runs once, when the log does not already carry them.
 //
 // Every entry must first verify under whichever digest wrote it, so a log that was
-// already broken is never blessed. A missing state file is only innocent when every
-// entry is unkeyed — a first run under the new scheme. With keyed entries present it
-// means the mark was removed, so nothing is converted and VerifyChain reports it.
+// already broken is never blessed. That is not sufficient on its own: version0 is keyed
+// with legacyDefaultSecret, a constant published in this repository, so "verifies as v0"
+// is a property anyone who can write the log can give it. Converting on that alone let an
+// attacker with write access to dataDir swap in a chain of their own and have the next
+// boot re-mint it under the real key — TestForgedLegacyLogIsNotLaunderedByConverge.
+//
+// So the mark decides, because it is the one input outside dataDir. When it exists the
+// log must be the one it attests to: the same record count and the same tail hash. A
+// mismatch converts nothing and leaves the entries in their old format, where either the
+// truncation check or Resume's digest check rejects them.
+//
+// When there is no mark at all, there is nothing to compare against, and the only case
+// that stays innocent is a genuine first run under the new scheme: every entry v0, written
+// before this server had a mark to keep. With keyed v1 entries present a missing mark
+// means it was removed, so nothing is converted.
 func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 	if len(entries) == 0 {
 		return entries, nil
@@ -333,6 +346,10 @@ func (l *Logger) converge(entries []Entry, st *state) ([]Entry, error) {
 				return entries, nil
 			}
 		}
+	} else if st.Count != len(entries) || st.Hash != entries[len(entries)-1].Hash {
+		// The count alone is not enough: an equal-length substitution passes it, and
+		// that is the cheapest forgery to mount.
+		return entries, nil
 	}
 
 	// Replay, not a per-record Append: the log is written once after the loop and the
@@ -456,15 +473,11 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		// before. The mark write is best-effort: its failure is returned from Log, not to
 		// the chain, and recover() reconciles a mark left behind however far it fell.
 		//
-		// stateMissing means this deployment deliberately has no anchor file. The record
-		// is still written and the chain still advances; returning an error here would
-		// stop the logger entirely.
-		//
 		// A failed mark write is reported to the caller, not to the chain. The record is
 		// already on disk, so refusing here would leave the chain a step behind the log
 		// and the next append would reuse this sequence -- forking it permanently. A mark
 		// left behind is just the interrupted write recover() reconciles.
-		if a.Count > l.anchor.Count && !l.stateMissing {
+		if a.Count > l.anchor.Count {
 			l.anchor = a
 			stateErr = l.saveState()
 		}
@@ -517,9 +530,6 @@ func (l *Logger) loadState() (*state, error) {
 // saveState advances the high-water mark. It never lowers it: letting the mark drop
 // would let appends after a truncation erase the evidence.
 func (l *Logger) saveState() error {
-	if l.stateMissing {
-		return nil
-	}
 	st, err := l.loadState()
 	if err != nil {
 		return err
