@@ -54,7 +54,7 @@ ABLATIONS = [
   "(Entry, error) {\n\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)\n\tdefer cancel()\n\tl.mu.Lock()"),
 
  ("chain driven from a second call site", AUDIT, "TestChainIsDrivenFromOneCallSite",
-  "\tl.count++\n\treturn entry, stateErr", "\t_ = l.chain.Anchor()\n\tl.count++\n\treturn entry, stateErr"),
+  "\tl.count++\n\tif stateErr != nil {", "\t_ = l.chain.Anchor()\n\tl.count++\n\tif stateErr != nil {"),
 
  ("a failed mark write stops the chain", AUDIT, "TestUnwritableMarkDoesNotForkTheChain",
   "\t\t\tstateErr = l.saveState()", "\t\t\treturn l.saveState()"),
@@ -119,8 +119,12 @@ ABLATIONS = [
   '\t\t"service": "kybookmarks-server",\n\t\t"auditWriteFailures": s.auditFailures.Load(),\n\t\t"time":    time.Now().UTC(),'),
 
  ("a failed audit write is discarded again", SERVER, "TestAuditWriteFailureIsNotSilent",
-  "\tif _, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details); err != nil {",
-  "\t_, _ = s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err := error(nil); err != nil {"),
+  "\t_, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err == nil {",
+  "\t_, _ = s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\terr := error(nil)\n\tif err == nil {"),
+
+ ("a lagging mark is reported as a missing record", SERVER, "TestUnwritableMarkIsNotReportedAsAMissingRecord",
+  "\tif errors.Is(err, audit.ErrMarkNotAdvanced) {",
+  "\tif errors.Is(err, audit.ErrMarkNotAdvanced) && false {"),
 
  ("sync signature optional again", ADMIN, "TestDirectorySync",
   '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
