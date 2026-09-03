@@ -290,17 +290,31 @@ func (s *Store) GetAccountByID(id string) (*Account, error) {
 }
 
 func (s *Store) GetAccountByUsernameOrEmail(identifier string) (*Account, error) {
+	clean := strings.ToLower(strings.TrimSpace(identifier))
+	return s.getAccountWhere("username = ? OR email = ?", clean, clean)
+}
+
+// GetAccountByEmail matches the email column only. SSO adoption uses it so an
+// IdP email claim can never be matched against a local username.
+func (s *Store) GetAccountByEmail(email string) (*Account, error) {
+	clean := strings.ToLower(strings.TrimSpace(email))
+	if clean == "" {
+		return nil, ErrNotFound
+	}
+	return s.getAccountWhere("email = ?", clean)
+}
+
+func (s *Store) getAccountWhere(where string, args ...any) (*Account, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	clean := strings.ToLower(strings.TrimSpace(identifier))
 	query := `SELECT id, username, email, display_name, password_hash, auth_salt, kdf_iterations,
 		role, status, sso_subject, password_key_wrap, recovery_key_wrap, recovery_verifier,
-		created_at, updated_at FROM accounts WHERE username = ? OR email = ?`
+		created_at, updated_at FROM accounts WHERE ` + where
 
 	var a Account
 	var ssoSub, pWrap, rWrap, rVer sql.NullString
-	err := s.db.QueryRow(query, clean, clean).Scan(
+	err := s.db.QueryRow(query, args...).Scan(
 		&a.ID, &a.Username, &a.Email, &a.DisplayName, &a.PasswordHash, &a.AuthSalt, &a.KDFIterations,
 		&a.Role, &a.Status, &ssoSub, &pWrap, &rWrap, &rVer, &a.CreatedAt, &a.UpdatedAt,
 	)

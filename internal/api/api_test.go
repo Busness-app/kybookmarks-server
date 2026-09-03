@@ -40,10 +40,14 @@ func setupTestServer(t *testing.T) (*Server, http.Handler, func()) {
 
 	cfg := Config{
 		DataDir:    tmpDir,
+		ConfigDir:  filepath.Join(tmpDir, "config"),
 		SyncSecret: "test-sync-secret",
 	}
 
-	srv := NewServer(dbStore, vm, ds, ss, al, cfg)
+	srv, err := NewServer(dbStore, vm, ds, ss, al, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := srv.Routes()
 
 	cleanup := func() {

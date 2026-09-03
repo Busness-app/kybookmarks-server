@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,27 +52,36 @@ type Server struct {
 }
 
 // loadOrCreateSaltKey keeps the decoy salt stable across restarts, so an
-// attacker cannot spot unknown usernames by watching their salt change.
-func loadOrCreateSaltKey(configDir string) []byte {
+// attacker cannot spot unknown usernames by watching their salt change. A key
+// that cannot be persisted would change every restart, so that is an error.
+func loadOrCreateSaltKey(configDir string) ([]byte, error) {
+	if configDir == "" {
+		return nil, errors.New("decoy salt key: no config directory to persist it in")
+	}
 	path := filepath.Join(configDir, "enum.key")
-	if raw, err := os.ReadFile(path); err == nil {
-		if key, err := hex.DecodeString(strings.TrimSpace(string(raw))); err == nil && len(key) >= 32 {
-			return key
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		key, decErr := hex.DecodeString(strings.TrimSpace(string(raw)))
+		if decErr != nil || len(key) < 32 {
+			return nil, fmt.Errorf("decoy salt key %s is corrupt; remove it to generate a new one", path)
 		}
+		return key, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("decoy salt key: %w", err)
 	}
 
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		// Without randomness we cannot serve a decoy salt safely; a fresh random
-		// key each restart is still better than a published constant.
-		panic("kybookmarks: no entropy available: " + err.Error())
+		return nil, fmt.Errorf("decoy salt key: no entropy: %w", err)
 	}
-	if configDir != "" {
-		if err := os.MkdirAll(configDir, 0o700); err == nil {
-			_ = os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600)
-		}
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return nil, fmt.Errorf("decoy salt key: %w", err)
 	}
-	return key
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+		return nil, fmt.Errorf("decoy salt key: %w", err)
+	}
+	return key, nil
 }
 
 type loginAttemptTracker struct {
@@ -78,7 +89,11 @@ type loginAttemptTracker struct {
 	blockedUntil time.Time
 }
 
-func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Store, al *audit.Logger, cfg Config) *Server {
+func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Store, al *audit.Logger, cfg Config) (*Server, error) {
+	saltKey, err := loadOrCreateSaltKey(cfg.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		store:         s,
 		vault:         vm,
@@ -87,8 +102,8 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		audit:         al,
 		cfg:           cfg,
 		loginAttempts: make(map[string]*loginAttemptTracker),
-		saltKey:       loadOrCreateSaltKey(cfg.ConfigDir),
-	}
+		saltKey:       saltKey,
+	}, nil
 }
 
 func (s *Server) Routes() http.Handler {

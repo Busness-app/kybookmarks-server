@@ -82,7 +82,10 @@ func main() {
 		SyncSecret: syncSecret,
 	}
 
-	srv := api.NewServer(dbStore, vaultMgr, deviceStore, ssoStore, auditLogger, cfg)
+	srv, err := api.NewServer(dbStore, vaultMgr, deviceStore, ssoStore, auditLogger, cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize server: %v", err)
+	}
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
