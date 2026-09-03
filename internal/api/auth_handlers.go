@@ -575,8 +575,18 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Adopting an existing local account on first sign-in is a takeover primitive:
 	// whoever controls the claim controls the account. Only a verified email is
 	// trusted for that, never preferred_username, which most IdPs let users set.
-	if user == nil && claims.EmailVerified && claims.Email != "" {
-		if existing, lookupErr := s.store.GetAccountByUsernameOrEmail(claims.Email); lookupErr == nil {
+	if user == nil && claims.EmailVerified && strings.Contains(claims.Email, "@") {
+		if existing, lookupErr := s.store.GetAccountByEmail(claims.Email); lookupErr == nil && strings.EqualFold(existing.Email, claims.Email) {
+			// Refuse before writing: a suspended or already-linked account must not
+			// be rebound by whoever shows up at the callback.
+			if existing.Status != "active" {
+				http.Error(w, "account is suspended", http.StatusForbidden)
+				return
+			}
+			if existing.SSOSubject != "" {
+				http.Error(w, "account is already linked to another SSO identity", http.StatusForbidden)
+				return
+			}
 			existing.SSOSubject = claims.Subject
 			if err := s.store.UpdateAccount(existing); err != nil {
 				http.Error(w, "failed to link SSO identity", http.StatusInternalServerError)
