@@ -406,3 +406,63 @@ func TestDegradedHealthStaysHTTP200(t *testing.T) {
 		t.Fatalf("health status = %q, want degraded", health.Status)
 	}
 }
+
+// A mark that cannot be written is not a record that was not written. Log's design note
+// says the record is on disk and the mark is reconciled at the next start; the operator
+// alarm used to say the opposite, and an operator acting on it would restore the log
+// from backup over intact records.
+//
+// Written first against the single-branch auditEvent, where it failed on the message.
+func TestUnwritableMarkIsNotReportedAsAMissingRecord(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// The mark lives in the audit config directory; the log does not. Owner-only
+	// read/execute leaves the log writable and the mark not.
+	confDir := filepath.Join(srv.cfg.DataDir, "auditconf")
+	if err := os.Chmod(confDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(confDir, 0700)
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	entries, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Action == "auth.login_failed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the entry never reached the log; this test needs a writable log and an unwritable mark: %+v", entries)
+	}
+
+	if strings.Contains(logged.String(), "was NOT recorded") {
+		t.Fatalf("the operator was told an entry on disk is missing: %q", logged.String())
+	}
+	if !strings.Contains(logged.String(), "high-water mark did not advance") {
+		t.Fatalf("the mark failure reached no operator: %q", logged.String())
+	}
+
+	// Still degraded: while the mark lags, entries past it can be truncated undetected.
+	req = httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `"degraded"`) {
+		t.Fatalf("health did not report the lagging mark: %s", w.Body.String())
+	}
+}

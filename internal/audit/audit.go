@@ -57,6 +57,14 @@ const (
 // can mention the damaged lines and the remedy for them; both refuse to start.
 var ErrCorruptLog = errors.New("audit: log holds lines that do not decode")
 
+// ErrMarkNotAdvanced reports that Log wrote the record but could not advance the
+// high-water mark. The entry is on disk and the chain is intact; what is missing is the
+// truncation evidence for it, which recover() reconstructs on the next start once the
+// config directory is writable again. It is distinct from a record-write failure so the
+// operator alarm can say which happened: "was NOT recorded" about an entry that is on
+// disk is the false alarm that gets real ones ignored.
+var ErrMarkNotAdvanced = errors.New("audit: entry recorded, high-water mark not advanced")
+
 // Entry represents a single audit event with cryptographic hash chaining.
 type Entry struct {
 	ID        string    `json:"id"`
@@ -568,7 +576,10 @@ func (l *Logger) Log(ctx context.Context, action, userID, deviceID, ip, details 
 		return entry, fmt.Errorf("failed to record the audit entry: %w", err)
 	}
 	l.count++
-	return entry, stateErr
+	if stateErr != nil {
+		return entry, fmt.Errorf("%w: %w", ErrMarkNotAdvanced, stateErr)
+	}
+	return entry, nil
 }
 
 // chainHash is the single hash definition, shared by the write and verify paths so

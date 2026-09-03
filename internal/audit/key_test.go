@@ -616,11 +616,15 @@ func TestUnwritableMarkDoesNotForkTheChain(t *testing.T) {
 	}
 	defer os.Chmod(configDir, 0700)
 
-	if _, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x"); err == nil {
-		t.Fatal("Log hid an unwritable audit mark")
-	}
-	if _, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x"); err == nil {
-		t.Fatal("Log hid an unwritable audit mark")
+	for i := 0; i < 2; i++ {
+		_, err := l.Log(context.Background(), "auth.logout", "u", "d", "127.0.0.1", "x")
+		if err == nil {
+			t.Fatal("Log hid an unwritable audit mark")
+		}
+		// The record is on disk; the error has to say so, or the caller reports it missing.
+		if !errors.Is(err, ErrMarkNotAdvanced) {
+			t.Fatalf("Log returned %v, want ErrMarkNotAdvanced", err)
+		}
 	}
 
 	// The log must still be a single well-formed chain, just ahead of its mark.

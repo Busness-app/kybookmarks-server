@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -76,11 +77,24 @@ type Server struct {
 //
 // Details are not logged: they carry usernames, and LOGGING.md keeps application logs to
 // coarse actor identifiers. The chain is where the detail belongs.
+//
+// A mark failure is not a missing record. Log returns audit.ErrMarkNotAdvanced when the
+// entry landed but the high-water mark did not, and that is said as such: an operator
+// told the entry is missing may restore the log from backup over intact records, and one
+// who learns the line lies stops reading it. It still counts as a failure -- while the
+// mark lags, every entry past it can be truncated without detection, so the subsystem
+// needs attention and /api/health should say so. TestUnwritableMarkIsNotReportedAsAMissingRecord.
 func (s *Server) auditEvent(r *http.Request, action, userID, deviceID, details string) {
-	if _, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details); err != nil {
-		s.auditFailures.Add(1)
-		log.Printf("audit: %s for user %q was NOT recorded: %v", action, userID, err)
+	_, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)
+	if err == nil {
+		return
 	}
+	s.auditFailures.Add(1)
+	if errors.Is(err, audit.ErrMarkNotAdvanced) {
+		log.Printf("audit: %s for user %q was recorded, but the high-water mark did not advance and will be reconciled at the next start: %v", action, userID, err)
+		return
+	}
+	log.Printf("audit: %s for user %q was NOT recorded: %v", action, userID, err)
 }
 
 // loadOrCreateSaltKey keeps the decoy salt stable across restarts, so an
