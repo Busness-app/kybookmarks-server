@@ -79,7 +79,7 @@ admin role.
 
 | Route | What authorises it |
 |---|---|
-| `GET /api/health` | Nothing. Returns service name and time only. |
+| `GET /api/health` | Nothing. Returns the service name, the time, and `ok`/`degraded` — one bit saying whether an audit write has failed. Always HTTP 200. The number of failures is not in the body: it would meter a disk-fill for the caller causing it. |
 | `GET /api/setup` | Nothing. Reports whether any account exists. |
 | `POST /api/setup` | The account table being empty. The check runs inside the insert transaction, so two concurrent calls cannot both enrol an admin. |
 | `POST /api/auth/login` | Credentials. Three failures lock the account for 15 minutes. |

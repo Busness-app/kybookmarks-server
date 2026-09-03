@@ -31,28 +31,100 @@ ABLATIONS = [
  ("high-water mark may drop", AUDIT, "TestTruncation|TestHighWaterMark",
   "\tif st != nil && uint64(st.Count) > l.anchor.Count {\n\t\treturn nil\n\t}", "\t_ = st"),
 
- ("self-heal missing state", AUDIT, "TestMissingState",
-  "\tif st == nil && len(entries) > 0 && l.anchor.Count == 0 {\n\t\tl.stateMissing = true\n\t}",
-  "\tif false {\n\t\tl.stateMissing = true\n\t}"),
+ ("emptied log skips the truncation check", AUDIT, "TestEmptyOrCorruptLogWithAMarkIsRefused",
+  "\tif uint64(len(entries)) < l.anchor.Count {",
+  "\tif false && uint64(len(entries)) < l.anchor.Count {"),
 
- ("state recreated by append", AUDIT, "TestMissingState",
-  "\tif a := l.chain.Anchor(); a.Count > l.anchor.Count && !l.stateMissing {",
-  "\tif a := l.chain.Anchor(); a.Count > l.anchor.Count {"),
+ ("missing mark accepted instead of refused", AUDIT, "TestMissingState",
+  "\tif st == nil && len(entries) > 0 && l.anchor.Count == 0 {",
+  "\tif false && st == nil && len(entries) > 0 && l.anchor.Count == 0 {"),
 
  ("mark never catches up after an interrupted write", AUDIT, "TestStateCatchesUp|TestTruncation",
-  "\tif uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {",
-  "\tif false && uint64(len(entries)) == l.anchor.Count+1 && l.anchor.Count > 0 {"),
+  "\toverrun := l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count",
+  "\toverrun := false && l.anchor.Count > 0 && uint64(len(entries)) > l.anchor.Count"),
+
+ ("audit write cancellable by the client", AUDIT, "TestAbortedRequestStillAudits",
+  "\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)",
+  "\tctx, cancel := context.WithTimeout(ctx, appendTimeout)"),
+
+ ("audit deadline started before the mutex it cannot interrupt", AUDIT, "TestHungStoreDelays",
+  "\t// budget measured from the moment it can actually make progress.\n\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)\n\tdefer cancel()\n",
+  "\t// budget measured from the moment it can actually make progress.\n",
+  "(Entry, error) {\n\tl.mu.Lock()",
+  "(Entry, error) {\n\tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)\n\tdefer cancel()\n\tl.mu.Lock()"),
+
+ ("chain driven from a second call site", AUDIT, "TestChainIsDrivenFromOneCallSite",
+  "\tl.count++\n\tif stateErr != nil {", "\t_ = l.chain.Anchor()\n\tl.count++\n\tif stateErr != nil {"),
+
+ ("a failed mark write stops the chain", AUDIT, "TestUnwritableMarkDoesNotForkTheChain",
+  "\t\t\tstateErr = l.saveState()", "\t\t\treturn l.saveState()"),
+
+ ("overrun run not checked against its predecessors", AUDIT, "TestOverrunRunMustChain",
+  "\t\t\tif rec.Prev != prev {", "\t\t\tif false && rec.Prev != prev {"),
 
  ("non-atomic state write", AUDIT, "TestStateIsReplaced|TestVerifyChainIsNotRaced",
   "\treturn writeFileAtomic(l.statePath, data)", "\treturn os.WriteFile(l.statePath, data, 0600)"),
 
- ("converge blesses a log that verifies under neither digest", AUDIT, "TestConvergeRefuses|TestForgery|TestLegacyLog",
+ ("converge trusts the log instead of the mark", AUDIT, "TestForgedLegacyLog",
+  "\t} else if st.Count != len(entries) || st.Hash != entries[len(entries)-1].Hash {",
+  "\t} else if false {"),
+
+ ("converge checks the mark's count but not its tail hash", AUDIT, "TestForgedLegacyLog",
+  "\t} else if st.Count != len(entries) || st.Hash != entries[len(entries)-1].Hash {",
+  "\t} else if st.Count < len(entries) {"),
+
+ ("converge blesses a log that verifies under neither digest", AUDIT, "TestConvergeRefuses|TestForgedLegacyLog|TestLegacyLog",
   "\tversions, ok := l.legacyVersions(entries)\n\tif !ok {\n\t\treturn entries, nil\n\t}",
   "\tversions, _ := l.legacyVersions(entries)"),
 
  ("legacy version ignored when recognising entries", AUDIT, "TestLegacyLog|TestForgery|TestKeyIsNotAConstant",
   "\tif version == version0 {\n\t\treturn chainHash(l.legacyKey,",
   "\tif false {\n\t\treturn chainHash(l.legacyKey,"),
+
+ ("torn tail merged into the next record", AUDIT, "TestTornWrite",
+  "\t\tline := append(data, '\\n')\n\t\tif l.tornTail {",
+  "\t\tline := append(data, '\\n')\n\t\tif false && l.tornTail {"),
+
+ ("torn tail never noticed, so the next append merges onto it", AUDIT, "TestTornWrite",
+  "\tsc.torn = len(data) > 0 && data[len(data)-1] != '\\n'",
+  "\tsc.torn = false"),
+
+ ("a corrupt line is reported as a removed record", AUDIT, "TestCorruptLineIsNotReportedAsTruncation",
+  "\tif uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {",
+  "\tif false && uint64(len(entries)) < l.anchor.Count && sc.corrupt > 0 {"),
+
+ ("undecodable lines counted as absent records", AUDIT, "TestCorruptLineIsNotReportedAsTruncation|TestEmptyOrCorrupt",
+  "\t\t\tsc.corrupt++\n\t\t\tcontinue",
+  "\t\t\tcontinue"),
+
+ ("overrun records not verified against the key", AUDIT, "TestOverrunRecordsMustCarryTheirOwnDigest|TestOverrunIsNotAdopted",
+  "\t\t\tif err := auditchain.VerifyRecord(l.key, rec); err != nil {",
+  "\t\t\tif err := error(nil); err != nil {"),
+
+ ("a failed write leaves the chain describing a log it no longer matches", AUDIT,
+  "TestShortWrite|TestFailedWriteReconciles",
+  "\t\t\tl.stale = true\n\t\t\treturn err", "\t\t\treturn err"),
+
+ ("the chain is never rebuilt from the log after a failed write", AUDIT,
+  "TestShortWrite|TestFailedWriteReconciles",
+  "\tif l.stale {\n\t\tif err := l.recover(); err != nil {",
+  "\tif false && l.stale {\n\t\tif err := l.recover(); err != nil {"),
+
+ ("degraded health answers 503", AUTH, "TestDegradedHealthStaysHTTP200",
+  '\twriteJSON(w, http.StatusOK, map[string]any{\n\t\t"status":  status,',
+  '\tcode := http.StatusOK\n\tif status == "degraded" {\n\t\tcode = http.StatusServiceUnavailable\n\t}\n\twriteJSON(w, code, map[string]any{\n\t\t"status":  status,'),
+
+ ("health hands the failure count to anyone who asks", AUTH, "TestAuditWriteFailureIsNotSilent",
+  '\t\t"service": "kybookmarks-server",\n\t\t"time":    time.Now().UTC(),',
+  '\t\t"service": "kybookmarks-server",\n\t\t"auditWriteFailures": s.auditFailures.Load(),\n\t\t"time":    time.Now().UTC(),'),
+
+ ("a failed audit write is discarded again", SERVER, "TestAuditWriteFailureIsNotSilent",
+  "\t_, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err == nil {",
+  "\t_, _ = s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\terr := error(nil)\n\tif err == nil {"),
+
+ ("a lagging mark is reported as a missing record", SERVER, "TestUnwritableMarkIsNotReportedAsAMissingRecord",
+  "\tif errors.Is(err, audit.ErrMarkNotAdvanced) {",
+  "\tif errors.Is(err, audit.ErrMarkNotAdvanced) && false {"),
 
  ("sync signature optional again", ADMIN, "TestDirectorySync",
   '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
@@ -77,12 +149,12 @@ ABLATIONS = [
   "\tif err := s.store.CreateAccount(admin); err != nil {"),
 
  ("recovery ignores suspension", AUTH, "TestRecoveryRefusesSuspendedAccount",
-  '\tif acc.Status != "active" {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"',
-  '\tif false {\n\t\t_, _ = s.audit.Log("auth.recovery_failed"'),
+  '\tif acc.Status != "active" {\n\t\ts.auditEvent(r, "auth.recovery_failed"',
+  '\tif false {\n\t\ts.auditEvent(r, "auth.recovery_failed"'),
 
  ("recovery unmetered", AUTH, "TestRecoveryLocksOut",
-  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"',
-  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\t_, _ = s.audit.Log("auth.recovery_blocked"'),
+  '\tif exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\ts.auditEvent(r, "auth.recovery_blocked"',
+  '\tif false && exists && time.Now().Before(tracker.blockedUntil) {\n\t\ts.loginAttemptsMu.Unlock()\n\t\ts.auditEvent(r, "auth.recovery_blocked"'),
 
  ("constant decoy salt", AUTH, "TestLoginParamsDoesNotReveal",
   '\t\t\t"salt":       hex.EncodeToString(mac.Sum(nil)[:16]),',

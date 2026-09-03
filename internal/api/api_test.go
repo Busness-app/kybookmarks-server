@@ -2,14 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
@@ -276,5 +279,190 @@ func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
 	}
 	if acc, _ := srv.store.GetAccountByUsernameOrEmail("nobody"); acc != nil {
 		t.Fatal("sync event was applied with no secret configured")
+	}
+}
+
+// A client that aborts its connection must not be able to suppress the record of what
+// it just did. r.Context() dies with the connection, so if Log honoured it a
+// brute-forcing client could drop every auth.login_failed simply by hanging up.
+func TestAbortedRequestStillAudits(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	before, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // the client hung up before the handler reached its audit call
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	after, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("aborted request suppressed its audit record: %d entries before, %d after", len(before), len(after))
+	}
+	if got := after[len(after)-1].Action; got != "auth.login_failed" {
+		t.Fatalf("last audit action = %q, want auth.login_failed", got)
+	}
+}
+
+// An audit write that fails must not vanish. Every call site used to be `_, _ =`, so a
+// full or read-only audit volume erased auth.login_failed, admin.user_deleted and
+// devices.paired while the request returned its normal status and nothing reached the
+// server log -- the same suppression Log's context handling exists to prevent, reached
+// through the filesystem instead of a dropped connection.
+func TestAuditWriteFailureIsNotSilent(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Make the audit log unwritable in a way root cannot ignore: put a directory where
+	// the log file goes, so O_WRONLY fails with EISDIR whatever the uid.
+	if err := os.MkdirAll(filepath.Join(srv.cfg.DataDir, "audit", "audit.log"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// The request is deliberately unaffected: the action has already happened, so a 500
+	// would neither undo it nor restore the record.
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	if !strings.Contains(logged.String(), "auth.login_failed") {
+		t.Fatalf("a failed audit write reached no operator: server log held %q", logged.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	var health struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "degraded" {
+		t.Fatalf("health reported status=%q after a failed audit write", health.Status)
+	}
+
+	// The count is deliberately absent: a caller who needs no credentials to ask must
+	// not be handed a meter for their own disk-fill.
+	if strings.Contains(w.Body.String(), "auditWriteFailures") {
+		t.Fatalf("health exposed the failure count to an unauthenticated caller: %s", w.Body.String())
+	}
+}
+
+// The one thing this server decided differently from the rest of the suite is that a
+// degraded audit volume answers 200, not 503. Nothing in the repo failed when the code
+// was flipped to 503, which made the divergence a preference rather than a property.
+//
+// It is a property. Neither product runs an orchestrator that sheds a 503 from rotation:
+// both compose files are `restart: unless-stopped` with no `depends_on: service_healthy`.
+// What a 503 does reach is Docker's healthcheck and every uptime poller pointed at this
+// path, so a full disk -- which is exactly when the audit trail matters -- would read as
+// the service being down, and a restart neither empties the disk nor restores the record.
+// The counter never resets, so one transient failure would keep it "down" for the life of
+// the process.
+func TestDegradedHealthStaysHTTP200(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	srv.auditFailures.Add(1)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("degraded health returned %d, want 200: a full audit disk must not read as an outage", w.Code)
+	}
+	var health struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "degraded" {
+		t.Fatalf("health status = %q, want degraded", health.Status)
+	}
+}
+
+// A mark that cannot be written is not a record that was not written. Log's design note
+// says the record is on disk and the mark is reconciled at the next start; the operator
+// alarm used to say the opposite, and an operator acting on it would restore the log
+// from backup over intact records.
+//
+// Written first against the single-branch auditEvent, where it failed on the message.
+func TestUnwritableMarkIsNotReportedAsAMissingRecord(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// The mark lives in the audit config directory; the log does not. Owner-only
+	// read/execute leaves the log writable and the mark not.
+	confDir := filepath.Join(srv.cfg.DataDir, "auditconf")
+	if err := os.Chmod(confDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(confDir, 0700)
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "wrong"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login: got %d, want 401", w.Code)
+	}
+
+	entries, err := srv.audit.ReadEntries(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Action == "auth.login_failed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the entry never reached the log; this test needs a writable log and an unwritable mark: %+v", entries)
+	}
+
+	if strings.Contains(logged.String(), "was NOT recorded") {
+		t.Fatalf("the operator was told an entry on disk is missing: %q", logged.String())
+	}
+	if !strings.Contains(logged.String(), "high-water mark did not advance") {
+		t.Fatalf("the mark failure reached no operator: %q", logged.String())
+	}
+
+	// Still degraded: while the mark lags, entries past it can be truncated undetected.
+	req = httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `"degraded"`) {
+		t.Fatalf("health did not report the lagging mark: %s", w.Body.String())
 	}
 }

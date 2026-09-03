@@ -78,7 +78,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("admin.user_created", admin.ID, "", clientIP(r), "admin created user: "+user.Username)
+	s.auditEvent(r, "admin.user_created", admin.ID, "", "admin created user: "+user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
 		"user": user,
@@ -131,7 +131,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("admin.user_updated", admin.ID, "", clientIP(r), "admin updated user: "+user.Username)
+	s.auditEvent(r, "admin.user_updated", admin.ID, "", "admin updated user: "+user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
 		"user": user,
@@ -152,7 +152,7 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("admin.user_deleted", admin.ID, "", clientIP(r), "admin deleted user: "+id)
+	s.auditEvent(r, "admin.user_deleted", admin.ID, "", "admin deleted user: "+id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -175,7 +175,7 @@ func (s *Server) handleAdminSaveSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("admin.sso_updated", admin.ID, "", clientIP(r), "admin updated SSO configuration")
+	s.auditEvent(r, "admin.sso_updated", admin.ID, "", "admin updated SSO configuration")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"settings": settings,
@@ -277,7 +277,7 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 				SSOSubject:    event.User.ID,
 			}
 			_ = s.store.CreateAccount(newUser)
-			_, _ = s.audit.Log("sync.user_created", newUser.ID, "", clientIP(r), "replicated user from KySignOn: "+newUser.Username)
+			s.auditEvent(r, "sync.user_created", newUser.ID, "", "replicated user from KySignOn: "+newUser.Username)
 		}
 	case "user.update":
 		existing, _ := s.store.GetAccountByUsernameOrEmail(event.User.Username)
@@ -295,13 +295,13 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 				existing.Status = event.User.Status
 			}
 			_ = s.store.UpdateAccount(existing)
-			_, _ = s.audit.Log("sync.user_updated", existing.ID, "", clientIP(r), "synced user update from KySignOn: "+existing.Username)
+			s.auditEvent(r, "sync.user_updated", existing.ID, "", "synced user update from KySignOn: "+existing.Username)
 		}
 	case "user.delete":
 		existing, _ := s.store.GetAccountByUsernameOrEmail(event.User.Username)
 		if existing != nil {
 			_ = s.store.DeleteAccount(existing.ID)
-			_, _ = s.audit.Log("sync.user_deleted", existing.ID, "", clientIP(r), "synced user deletion from KySignOn: "+existing.Username)
+			s.auditEvent(r, "sync.user_deleted", existing.ID, "", "synced user deletion from KySignOn: "+existing.Username)
 		}
 	}
 

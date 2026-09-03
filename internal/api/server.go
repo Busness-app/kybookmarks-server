@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
@@ -47,6 +50,51 @@ type Server struct {
 
 	// saltKey derives the decoy login salt served for unknown usernames.
 	saltKey []byte
+
+	// auditFailures counts audit writes that did not land. /api/health reports only
+	// whether it is non-zero; the count itself stays out of an unauthenticated body.
+	auditFailures atomic.Uint64
+}
+
+// auditEvent records an event on the tamper-evident chain, and refuses to let a failure
+// of that write be silent.
+//
+// It does not fail the request, and that is a judgement call rather than an oversight.
+// Every call site logs *after* the thing has already happened: the user is deleted, the
+// session is issued, the password is rejected. A 500 at that point would neither undo the
+// action nor restore the record, and it would invite a retry that repeats it. What was
+// wrong before was not the status code, it was that 28 call sites wrote `_, _ =` and a
+// full or read-only audit volume erased admin.user_deleted, devices.paired and every
+// auth.login_failed with nothing reaching the operator at all -- the same suppression
+// Log's context handling exists to prevent, reached through the filesystem.
+//
+// So the failure gets two channels an operator already watches: stderr, where LOGGING.md
+// sends security events, and /api/health, which turns "degraded" and says no more than
+// that. Health stays HTTP 200 while degraded on purpose: nothing here sheds a 503 from
+// rotation, so it would only tell the healthcheck and the uptime poller that a full disk
+// is an outage, and a restart empties no disk. TestAuditWriteFailureIsNotSilent covers
+// both channels; TestDegradedHealthStaysHTTP200 pins the status code.
+//
+// Details are not logged: they carry usernames, and LOGGING.md keeps application logs to
+// coarse actor identifiers. The chain is where the detail belongs.
+//
+// A mark failure is not a missing record. Log returns audit.ErrMarkNotAdvanced when the
+// entry landed but the high-water mark did not, and that is said as such: an operator
+// told the entry is missing may restore the log from backup over intact records, and one
+// who learns the line lies stops reading it. It still counts as a failure -- while the
+// mark lags, every entry past it can be truncated without detection, so the subsystem
+// needs attention and /api/health should say so. TestUnwritableMarkIsNotReportedAsAMissingRecord.
+func (s *Server) auditEvent(r *http.Request, action, userID, deviceID, details string) {
+	_, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)
+	if err == nil {
+		return
+	}
+	s.auditFailures.Add(1)
+	if errors.Is(err, audit.ErrMarkNotAdvanced) {
+		log.Printf("audit: %s for user %q was recorded, but the high-water mark did not advance and will be reconciled at the next start: %v", action, userID, err)
+		return
+	}
+	log.Printf("audit: %s for user %q was NOT recorded: %v", action, userID, err)
 }
 
 // loadOrCreateSaltKey keeps the decoy salt stable across restarts, so an
