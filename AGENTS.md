@@ -34,12 +34,17 @@ Rules for anyone touching this package:
   the write and verify paths cannot drift.
 - **The legacy tail is anchored** by a single keyed `audit.rekeyed` marker, written only on
   a genuine first keying (state absent *and* every entry `v: 0`).
-- **Do not self-heal. A missing `audit.state` is a boot failure.** With the mark gone
-  there is nothing left to compare the log against, so a truncated log and an intact one
-  are the same file — the previous behaviour, starting anyway and having `VerifyChain`
-  report it forever, was an alarm that stayed on whatever the log contained. `NewLogger`
-  returns `ErrBrokenChain` naming both files, in the same words `kypassword-server` uses,
-  and does not recreate the mark. The high-water mark never decreases.
+- **A missing `audit.state` is a boot failure, except when the log is entirely
+  pre-conversion.** With the mark gone there is nothing left to compare the log against, so
+  a truncated log and an intact one are the same file — the previous behaviour, starting
+  anyway and having `VerifyChain` report it forever, was an alarm that stayed on whatever
+  the log contained. `NewLogger` returns `ErrBrokenChain` naming both files, in the same
+  words `kypassword-server` uses, and does not recreate the mark on its own. The accepted
+  exception: if every entry is still `v: 0`, `converge` runs before the missing-mark check,
+  re-mints the log under the audit key, and writes a fresh mark — a genuine first keying,
+  and the store boots reporting healthy rather than refusing. Reaching this case needs
+  write access to `configDir`, which already implies key access, so it sits outside this
+  chain's threat model. The high-water mark never decreases.
 - **A legacy log is re-minted only when the mark attests to it.** `converge` requires the
   same record count *and* the same tail hash before rewriting a log under the audit key.
   Verifying under `legacyHash` is not enough on its own: `v: 0` is keyed with
