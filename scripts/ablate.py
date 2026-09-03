@@ -89,8 +89,15 @@ ABLATIONS = [
   '\tcookie, err := r.Cookie(csrfCookieName)\n\tif err != nil || cookie.Value == "" {\n\t\treturn false\n\t}\n\n\theaderToken := r.Header.Get("X-CSRF-Token")\n\treturn headerToken != "" && hmac.Equal([]byte(headerToken), []byte(cookie.Value))'),
 
  ("sso adopts on any email claim", AUTH, "TestSSOWillNotAdopt",
-  "\tif user == nil && claims.EmailVerified && claims.Email != \"\" {",
-  "\tif user == nil && claims.Email != \"\" {"),
+  "if user == nil && claims.EmailVerified && strings.Contains(claims.Email, \"@\") {",
+  "if user == nil && strings.Contains(claims.Email, \"@\") {"),
+
+ ("sso adopts a suspended account", AUTH, "TestSSOWillNotBindASuspendedAccount",
+  '\t\t\tif existing.Status != "active" {\n\t\t\t\thttp.Error(w, "account is suspended", http.StatusForbidden)',
+  '\t\t\tif false {\n\t\t\t\thttp.Error(w, "account is suspended", http.StatusForbidden)'),
+
+ ("sso rebinds a linked account", AUTH, "TestSSOWillNotRebindALinkedAccount",
+  '\t\t\tif existing.SSOSubject != "" {', '\t\t\tif false {'),
 
  ("sso subject collides on empty string", STORE, "TestSecondAccountCanBeCreated|TestSSOWillNotAdopt",
   "\tif s == \"\" {\n\t\treturn nil\n\t}\n\treturn s\n}",
