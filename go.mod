@@ -1,8 +1,9 @@
 module github.com/Busness-app/kybookmarks-server
 
-go 1.25.0
+go 1.26.6
 
 require (
+	github.com/Busness-app/ky-primitives v0.3.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.55.0
 	modernc.org/sqlite v1.56.0

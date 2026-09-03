@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,12 +19,12 @@ func TestAuditLogAndVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = logger.Log("auth.login", "user-1", "device-1", "127.0.0.1", "signed in")
+	_, err = logger.Log(context.Background(), "auth.login", "user-1", "device-1", "127.0.0.1", "signed in")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = logger.Log("bookmark.create", "user-1", "device-1", "127.0.0.1", "new bookmark")
+	_, err = logger.Log(context.Background(), "bookmark.create", "user-1", "device-1", "127.0.0.1", "new bookmark")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestAuditLogAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = logger2.Log("bookmark.sync", "user-1", "device-1", "127.0.0.1", "synced")
+	_, err = logger2.Log(context.Background(), "bookmark.sync", "user-1", "device-1", "127.0.0.1", "synced")
 	if err != nil {
 		t.Fatal(err)
 	}
