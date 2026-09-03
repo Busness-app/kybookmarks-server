@@ -1,0 +1,60 @@
+# Early warning, not a merge gate.
+#
+# This repository's CI builds against the ky-primitives version pinned in go.mod. That
+# tells you nothing about where the library is going, so a breaking change lands here as
+# a surprise at bump time. This job answers the other question -- "the next time we bump
+# ky-primitives, will it break us?" -- by building against the library's default branch.
+#
+# It deliberately does not run on pull requests. A failure here is caused by a change in
+# another repository, so gating PRs on it would block work that has nothing to do with it.
+name: ky-primitives compatibility (early warning)
+
+on:
+  schedule:
+    - cron: '13 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      # Both checkouts use persist-credentials: false -- nothing after this runs git
+      # against a remote, so leaving an auth header in .git/config would only widen what
+      # the build and test steps below can read. ky-primitives is a public repository, so
+      # reading it needs no repository secret; this workflow references none.
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: consumer
+          persist-credentials: false
+
+      - name: Check out ky-primitives default branch
+        uses: actions/checkout@v4
+        with:
+          repository: Busness-app/ky-primitives
+          path: ky-primitives
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Point this repository at that checkout
+        working-directory: consumer
+        run: go mod edit -replace github.com/Busness-app/ky-primitives=../ky-primitives
+
+      - name: Build
+        working-directory: consumer
+        run: go build ./...
+
+      - name: Test
+        working-directory: consumer
+        run: go test -count=1 ./...
+
+      - name: Explain the failure
+        if: failure()
+        run: |
+          echo "::error::EARLY WARNING, NOT A MERGE GATE. Your pull request did not cause this. kybookmarks-server no longer builds or tests against the ky-primitives default branch, so the next version bump will break it. Fix it here, or in ky-primitives, before that bump -- no branch in this repository is blocked in the meantime."
