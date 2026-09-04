@@ -21,7 +21,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /kybookmarks-server ./cmd/server
 
 # Stage 3: Production Runtime
-FROM alpine:3.21
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata curl
 
 WORKDIR /app
