@@ -53,3 +53,22 @@ updates:
       default-days: 3
     commit-message:
       prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      # Runtime and build-tool bumps both reach the served bundle (CI and the Dockerfile
+      # build it from source), so they get the same review; the split only stops a Vite
+      # major from holding up a runtime patch.
+      frontend-runtime:
+        dependency-type: production
+        patterns: ["*"]
+      frontend-tooling:
+        dependency-type: development
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
