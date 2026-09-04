@@ -7,7 +7,12 @@ version: 2
 # pin to a tagged release once it does. The pattern is a prefix so a /v2 module path
 # or a published submodule stays in this group instead of falling through to `go`.
 #
-# Three days of cooldown on every ecosystem: a tag that has been out for three days
+# There is deliberately no npm entry. The built frontend (web/dist or frontend/dist) is
+# committed and CI diff-checks it, so a lockfile-only bump can never go green; until the
+# bundle is built in CI instead, the frontend gets advisory-driven security updates only,
+# and whoever merges one rebuilds and commits dist in the same PR.
+#
+# Three days of cooldown on every ecosystem here: a tag that has been out for three days
 # has had three days for someone to find it was yanked. Per the Dependabot options
 # reference ("cooldown": "only available for version updates, not security updates"),
 # a security update is not held back by it — but that path only exists if Dependabot
