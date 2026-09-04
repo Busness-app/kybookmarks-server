@@ -26,13 +26,13 @@ jobs:
       # the build and test steps below can read. ky-primitives is a public repository, so
       # reading it needs no repository secret; this workflow references none.
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: consumer
           persist-credentials: false
 
       - name: Check out ky-primitives default branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Busness-app/ky-primitives
           path: ky-primitives
@@ -43,7 +43,7 @@ jobs:
       # code wrote into the default-branch scope every push and pull_request job of ci.yml
       # restores from. A job running unreviewed code does not share a cache namespace with
       # a merge gate; it runs once a day and can build cold.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
           cache: false
