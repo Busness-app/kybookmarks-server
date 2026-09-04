@@ -7,12 +7,7 @@ version: 2
 # pin to a tagged release once it does. The pattern is a prefix so a /v2 module path
 # or a published submodule stays in this group instead of falling through to `go`.
 #
-# There is deliberately no npm entry. The built frontend (web/dist or frontend/dist) is
-# committed and CI diff-checks it, so a lockfile-only bump can never go green; until the
-# bundle is built in CI instead, the frontend gets advisory-driven security updates only,
-# and whoever merges one rebuilds and commits dist in the same PR.
-#
-# Three days of cooldown on every ecosystem here: a tag that has been out for three days
+# Three days of cooldown on every ecosystem: a tag that has been out for three days
 # has had three days for someone to find it was yanked. Per the Dependabot options
 # reference ("cooldown": "only available for version updates, not security updates"),
 # a security update is not held back by it — but that path only exists if Dependabot
@@ -56,5 +51,24 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      # Runtime and build-tool bumps both reach the served bundle (CI and the Dockerfile
+      # build it from source), so they get the same review; the split only stops a Vite
+      # major from holding up a runtime patch.
+      frontend-runtime:
+        dependency-type: production
+        patterns: ["*"]
+      frontend-tooling:
+        dependency-type: development
+        patterns: ["*"]
     commit-message:
       prefix: "chore(deps)"
