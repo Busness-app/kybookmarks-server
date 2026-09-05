@@ -176,7 +176,11 @@ func TestChecksRejectMissingMembersAndUnsafePaths(t *testing.T) {
 	}
 	t.Run("symlink escape", func(t *testing.T) {
 		dir, m := checksFixture(t)
-		if err := os.Symlink(t.TempDir(), filepath.Join(dir, "escape")); err != nil {
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "file"), []byte("outside sentinel"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
 			t.Fatal(err)
 		}
 		m.Files = append(m.Files, capsule.FileEntry{Path: "escape/file"})
@@ -260,4 +264,11 @@ func TestDrillRejectsDecodedMalformedRecipeAndCleansScratch(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("drill left scratch: %v %v", entries, err)
 	}
+}
+
+func TestChecksHonorAdditionalRecipeTables(t *testing.T) {
+	dir, m := checksFixture(t)
+	recipe := m.VerificationRecipe.(map[string]any)
+	recipe["required_tables"] = append(recipe["required_tables"].([]any), "future_application_table")
+	requireFailedCheck(t, Checks(dir, m), "Table present: future_application_table")
 }
