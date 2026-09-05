@@ -474,7 +474,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(nonceBytes)
 	nonce := hex.EncodeToString(nonceBytes)
 
-	cookieVal := fmt.Sprintf("%s|%s|%s|%s", state, verifier, linkUserID, nonce)
+	cookieVal := s.ssoTransactionCookie(state, verifier, linkUserID, nonce)
 	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoCookieName,
@@ -541,7 +541,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(cookie.Value, "|")
-	if len(parts) != 4 || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
+	if len(parts) != 5 || !s.validSSOTransactionCookie(parts) || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
 		http.Error(w, "invalid SSO state parameter", http.StatusBadRequest)
 		return
 	}
@@ -659,6 +659,25 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	s.auditEvent(r, "auth.sso_login", user.ID, "", "user signed in via SSO")
 
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// The callback must not trust the account link target merely because it arrived in an
+// HttpOnly cookie: a caller can supply an arbitrary Cookie header. Authenticate the whole
+// transaction so changing the link target also invalidates state, verifier, and nonce.
+func (s *Server) ssoTransactionCookie(state, verifier, linkUserID, nonce string) string {
+	payload := strings.Join([]string{state, verifier, linkUserID, nonce}, "|")
+	mac := hmac.New(sha256.New, s.saltKey)
+	_, _ = mac.Write([]byte("kybookmarks:sso-transaction\x00" + payload))
+	return payload + "|" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) validSSOTransactionCookie(parts []string) bool {
+	if len(parts) != 5 {
+		return false
+	}
+	want := s.ssoTransactionCookie(parts[0], parts[1], parts[2], parts[3])
+	wantMAC := want[strings.LastIndexByte(want, '|')+1:]
+	return hmac.Equal([]byte(parts[4]), []byte(wantMAC))
 }
 
 func (s *Server) handleSSOUnlink(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,10 @@ func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 
 // ssoCallback drives the callback with a state cookie the server would have set.
 func ssoCallback(t *testing.T, srv *Server, handler http.Handler, idp *httptest.Server, claims map[string]any) *httptest.ResponseRecorder {
+	return ssoCallbackWithCookie(t, srv, handler, idp, srv.ssoTransactionCookie("teststate", "verifier", "", "testnonce"))
+}
+
+func ssoCallbackWithCookie(t *testing.T, srv *Server, handler http.Handler, idp *httptest.Server, cookieValue string) *httptest.ResponseRecorder {
 	t.Helper()
 	srv.ssoHTTP = idp.Client()
 	if err := srv.ssoStore.Save(sso.SSOSettings{
@@ -59,10 +64,34 @@ func ssoCallback(t *testing.T, srv *Server, handler http.Handler, idp *httptest.
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?code=authcode&state=teststate", nil)
-	req.AddCookie(&http.Cookie{Name: ssoCookieName, Value: "teststate|verifier||testnonce"})
+	req.AddCookie(&http.Cookie{Name: ssoCookieName, Value: cookieValue})
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
+}
+
+// A Cookie header is attacker-controlled even when browsers cannot read the HttpOnly cookie.
+// Without the MAC, changing the empty link target to a known admin UUID binds the attacker's
+// verified OIDC subject to that admin and the callback mints an admin session.
+func TestSSOCallbackRejectsATamperedAccountLinkTarget(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+	admin := makeAccount(t, srv, "admin", "admin")
+	idp := stubIdP(t, map[string]any{"sub": "attacker-subject"})
+
+	good := srv.ssoTransactionCookie("teststate", "verifier", "", "testnonce")
+	tampered := strings.Replace(good, "verifier||testnonce", "verifier|"+admin.ID+"|testnonce", 1)
+	w := ssoCallbackWithCookie(t, srv, handler, idp, tampered)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("tampered callback = %d, want 400", w.Code)
+	}
+	after, err := srv.store.GetAccountByID(admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SSOSubject != "" {
+		t.Fatalf("tampered cookie bound admin to %q", after.SSOSubject)
+	}
 }
 
 // TestSSOWillNotAdoptAnAccountOnAnUnverifiedEmail is the takeover case: an IdP
