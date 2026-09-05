@@ -21,8 +21,8 @@ BACKUP = ".ablate.bak"
 
 ABLATIONS = [
  ("constant key fallback", AUDIT, "TestKeyIsNotAConstant|TestForgery",
-  "\tkey := make([]byte, keyLen)\n\tif _, err := rand.Read(key); err != nil {",
-  "\tkey := []byte(legacyDefaultSecret + legacyDefaultSecret)\n\tif _, err := rand.Read(make([]byte, 1)); err != nil {"),
+  "\treturn keyfile.LoadOrCreate(filepath.Join(configDir, keyFile), keyLen)",
+  "\treturn []byte(legacyDefaultSecret + legacyDefaultSecret)[:keyLen], nil"),
 
  ("anchor taken from the log instead of the mark", AUDIT, "TestTruncation|TestMissingState",
   "\tif err := auditchain.Verify(l.key, records, l.anchor); err != nil {",
@@ -126,9 +126,9 @@ ABLATIONS = [
   "\tif errors.Is(err, audit.ErrMarkNotAdvanced) {",
   "\tif errors.Is(err, audit.ErrMarkNotAdvanced) && false {"),
 
- ("sync signature optional again", ADMIN, "TestDirectorySync",
-  '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
-  '\tif s.cfg.SyncSecret == "" || r.Header.Get("X-KySignOn-Signature") == "" {\n\t\twriteJSON(w, http.StatusOK, map[string]bool{"ok": true})\n\t\treturn\n\t}\n\tmac := hmac.New'),
+ ("sync signature optional again", SERVER, "TestDirectorySync",
+  '\tmux.Handle("POST /api/sync/events", s.syncAuth()(http.HandlerFunc(s.handleDirectorySyncEvent)))',
+  '\tmux.HandleFunc("POST /api/sync/events", s.handleDirectorySyncEvent)'),
 
  ("pair/request public again", SERVER, "TestPairRequestRequiresAuth|TestPairingCannotEscalate",
   '\tmux.HandleFunc("POST /api/devices/pair/request", s.withAuth(s.handlePairRequest))',

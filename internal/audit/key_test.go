@@ -1357,3 +1357,17 @@ func TestFailedWriteReconcilesAgainstTheLog(t *testing.T) {
 	mustVerify(t, restarted, true, "restart after a write that failed with the record on disk")
 	mustVerify(t, l, true, "an append after a write that failed with the record on disk")
 }
+
+// keyfile.FromEnv accepts hex or base64 and demands exactly keyLen bytes; a set-but-wrong
+// value must refuse to start rather than fall through to the file.
+func TestAuditKeyEnvAcceptsBase64AndRefusesWrongLength(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(keyEnv, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") // 32 zero bytes, base64
+	if _, err := NewLogger(filepath.Join(root, "audit"), filepath.Join(root, "config"), ""); err != nil {
+		t.Fatalf("base64 AUDIT_KEY refused: %v", err)
+	}
+	t.Setenv(keyEnv, strings.Repeat("ab", 33))
+	if _, err := NewLogger(filepath.Join(root, "audit2"), filepath.Join(root, "config2"), ""); err == nil {
+		t.Fatal("AUDIT_KEY of 33 bytes accepted; keyfile requires exactly 32")
+	}
+}

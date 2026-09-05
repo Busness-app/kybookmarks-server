@@ -174,12 +174,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSucce
 
     try {
       const targetUser = loggedInUser?.username || username;
+      const params = await getJSON<{ salt: string; iterations: number }>(
+        `/api/auth/login-params?username=${encodeURIComponent(targetUser)}`
+      );
+      // The paper key never leaves the browser; the server checks its PBKDF2 derivation.
+      const cleanPaper = recoverySecret.replace(/-/g, '').toUpperCase();
+      const derived = await deriveAuthSecret(cleanPaper, params.salt, params.iterations);
+
       const res = await postJSON<{ ok: boolean; user: any }>('/api/auth/recovery', {
         username: targetUser,
-        recoverySecret,
+        recoverySecret: derived,
       });
 
-      const cleanPaper = recoverySecret.replace(/-/g, '').toUpperCase();
       const paperWrappingKey = await deriveKeyFromPassword(cleanPaper, res.user.authSalt, res.user.kdfIterations || 600000);
       const vaultKey = await unwrapVaultKey(res.user.recoveryKeyWrap, paperWrappingKey);
 

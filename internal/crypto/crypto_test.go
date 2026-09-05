@@ -5,33 +5,26 @@ import (
 	"testing"
 )
 
-func TestCryptoUtils(t *testing.T) {
-	salt, err := GenerateRandomHex(16)
-	if err != nil || len(salt) != 32 {
-		t.Fatalf("failed to generate salt: %v", err)
-	}
-
+func TestPasswordHashIsArgon2idAndVerifies(t *testing.T) {
 	pass := "super-secure-master-password-123"
-	hash, err := HashPassword(pass, salt)
+	hash, err := HashPassword(pass)
 	if err != nil {
 		t.Fatalf("hash failed: %v", err)
 	}
-
-	if !VerifyPassword(pass, salt, hash) {
+	if !strings.HasPrefix(hash, "$argon2id$") {
+		t.Fatalf("hash is not PHC argon2id: %q", hash)
+	}
+	if !VerifyPassword(pass, hash) {
 		t.Fatal("expected password verification to succeed")
 	}
-
-	if VerifyPassword("wrong-password", salt, hash) {
+	if VerifyPassword("wrong-password", hash) {
 		t.Fatal("expected password verification to fail on wrong password")
 	}
-
+	if VerifyPassword(pass, "not-a-hash") {
+		t.Fatal("a malformed stored hash must verify false, never true")
+	}
 	pin, err := GeneratePIN()
 	if err != nil || len(pin) != 6 {
 		t.Fatalf("expected 6-digit pin, got %s", pin)
-	}
-
-	recoveryKey, err := GeneratePaperRecoveryKey()
-	if err != nil || len(strings.ReplaceAll(recoveryKey, "-", "")) != 16 {
-		t.Fatalf("expected formatted recovery key, got %s", recoveryKey)
 	}
 }

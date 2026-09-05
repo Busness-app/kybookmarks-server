@@ -4,10 +4,10 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 
 ## Core Capabilities & Responsibilities
 
-1. **Zero-Knowledge End-to-End Encryption**: Bookmarks, notes, titles, and custom folder names are encrypted on trusted clients using Web Crypto (AES-256-GCM / PBKDF2). The server stores only opaque encrypted payloads, UUIDs, versions, parent relationships (max 5 depth), and 90-day tombstones.
+1. **Zero-Knowledge End-to-End Encryption**: Bookmarks, notes, titles, and custom folder names are encrypted on trusted clients using Web Crypto (AES-256-GCM / PBKDF2). The server stores only opaque encrypted payloads, UUIDs, versions, parent relationships (max 5 depth), and 90-day tombstones. Login and paper-recovery secrets are derived in the browser with PBKDF2 and stored server-side as Argon2id (`ky-primitives/password`); the paper key itself never reaches the server.
 2. **Deterministic Versioning & CAS Synchronization**: First-write-wins compare-and-swap concurrency. Failed concurrent writes are preserved for 90-day reconciliation rather than silently dropped.
 3. **Netscape Bookmark HTML Import & Export**: Standard browser bookmark file parsing and export supporting top-level merging and folder trees up to 5 levels.
-4. **KySignOn SSO & Account Replication**: Native OIDC PKCE single sign-on with automatic redirect URI resolution and signed directory sync webhook (`/api/sync/events`).
+4. **KySignOn SSO & Account Replication**: Native OIDC PKCE single sign-on with automatic redirect URI resolution; ID tokens are verified by `ky-primitives/oidcverify` against the issuer's JWKS with a per-login nonce (the issuer must be HTTPS). The directory-sync webhook (`/api/sync/events`) is verified by `ky-primitives/syncauth`: signature, timestamp window, event-id replay guard, and a signed `user.created`, `user.updated`, or `user.deleted` type over the bare SCIM user body KySignOn emits.
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
 6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
@@ -21,12 +21,14 @@ proves nothing.
 | Variable | Meaning |
 |---|---|
 | `CONFIG_DIR` | Holds `audit.key` and `audit.state`. Defaults to `./config`. |
-| `AUDIT_KEY` | Optional. Hex, >= 32 bytes (`openssl rand -hex 32`). Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
+| `AUDIT_KEY` | Optional. Exactly 32 bytes as hex (`openssl rand -hex 32`) or base64. A value that is set but malformed refuses to start. Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
 | `HMAC_SECRET` | **Legacy verification only.** Entries written before the chain was keyed are chained with this; it is never used to write. Leave it set to whatever the deployment used previously, or unset to fall back to the published constant those entries actually used. |
 | `SYNC_SECRET` | Signs the `/api/sync/events` directory webhook. **No default**: unset makes the endpoint reject every request. |
 
 Rules for anyone touching this package:
 
+- **Both on-disk keys (`audit.key`, `enum.key`) are read and minted through
+  `ky-primitives/keyfile`.** Do not add a third reader.
 - **No constant may ever key a written entry.** `legacyDefaultSecret` exists solely to
   verify `v: 0` records and must stay out of the write path.
 - **Entries are versioned.** `v: 0` is the legacy public-key format; `v: 1` is keyed and
@@ -115,6 +117,23 @@ Rules for anyone touching this package:
 `python3 scripts/ablate.py` re-runs the ablation suite: it breaks each defence in turn and
 fails if any test still passes. Run it after changing `internal/audit` or the sync webhook.
 
+## Passwords and the paper key
+
+`internal/crypto.HashPassword` and `VerifyPassword` wrap `ky-primitives/password`
+(Argon2id, RFC 9106 second profile, PHC-encoded). `AuthSalt` is the browser's PBKDF2
+salt, not the server's; the server hash carries its own. The paper recovery key is
+generated in the browser because it wraps the vault key, so `ky-primitives/recoverycode`
+(server-side generation) does not apply here. The browser posts
+`recoveryVerifier = PBKDF2(paperKey)` at enrolment and the same value as `recoverySecret`
+at recovery; the server stores and checks it exactly like a password.
+
+## OIDC transaction binding
+
+The HttpOnly OIDC transaction cookie is HMAC-authenticated under the persistent server key.
+State, PKCE verifier, optional account-link target, and nonce are one indivisible transaction;
+the callback refuses the cookie before token exchange if any field was altered. Account linking
+must never trust a caller-supplied user ID without that binding.
+
 ## Verification & Build Commands
 
 - **Backend Unit & Integration Tests**: `go test -v ./...`
@@ -158,4 +177,4 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
-- `zero_code_pairing_handoff_spec.md`: contract for pairing this service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. This repo owns the client half (`POST /api/pairing/claim`, `POST /api/backup/push`); KyRecovery owns the spec.
+- KyRecovery pairing and deposit: `docs/superpowers/plans/2026-09-05-kybookmarks-wires-recoveryclient.md`. The suite contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` v2.0.0; the product side is `ky-primitives/recoveryclient`. Do not copy `internal/backup` from another product.

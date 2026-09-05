@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoveryclient"
+
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
 	"github.com/Busness-app/kybookmarks-server/internal/store"
@@ -62,10 +64,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	secret := req.AuthSecret
 	verified := false
 	if secret != "" {
-		verified = crypto.VerifyPassword(secret, acc.AuthSalt, acc.PasswordHash)
+		verified = crypto.VerifyPassword(secret, acc.PasswordHash)
 	}
 	if !verified && req.Password != "" {
-		verified = crypto.VerifyPassword(req.Password, acc.AuthSalt, acc.PasswordHash)
+		verified = crypto.VerifyPassword(req.Password, acc.PasswordHash)
 	}
 
 	if !verified {
@@ -123,7 +125,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	cleanUser := strings.ToLower(strings.TrimSpace(req.Username))
 
 	// Recovery mints a session and returns the vault key wrappers, so it gets the
-	// same lockout as login. Without it this is an unmetered scrypt oracle.
+	// same lockout as login. Without it this is an unmetered Argon2id oracle.
 	s.loginAttemptsMu.Lock()
 	tracker, exists := s.loginAttempts[cleanUser]
 	if exists && time.Now().Before(tracker.blockedUntil) {
@@ -149,8 +151,9 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cleanSecret := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(req.RecoverySecret)), "-", "")
-	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.AuthSalt, acc.RecoveryVerifier) {
+	// The browser sends PBKDF2(paperKey), never the paper key itself.
+	secret := strings.TrimSpace(req.RecoverySecret)
+	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(secret, acc.RecoveryVerifier) {
 		s.recordFailedLogin(cleanUser)
 		s.auditEvent(r, "auth.recovery_failed", acc.ID, "", "failed recovery key attempt")
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
@@ -255,10 +258,21 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 	if secretToHash == "" {
 		secretToHash = req.Password
 	}
-	hash, err := crypto.HashPassword(secretToHash, salt)
+	hash, err := crypto.HashPassword(secretToHash)
 	if err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
 		return
+	}
+
+	// The browser posts PBKDF2(paperKey); it is stored exactly like a password.
+	recoveryVerifier := ""
+	if req.RecoveryVerifier != "" {
+		v, err := crypto.HashPassword(req.RecoveryVerifier)
+		if err != nil {
+			http.Error(w, "failed to hash recovery verifier", http.StatusInternalServerError)
+			return
+		}
+		recoveryVerifier = v
 	}
 
 	admin := &store.Account{
@@ -272,7 +286,7 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		Status:           "active",
 		PasswordKeyWrap:  req.PasswordKeyWrap,
 		RecoveryKeyWrap:  req.RecoveryKeyWrap,
-		RecoveryVerifier: req.RecoveryVerifier,
+		RecoveryVerifier: recoveryVerifier,
 	}
 
 	// Re-check the account count inside the insert. Hashing above is deliberately
@@ -353,7 +367,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !crypto.VerifyPassword(req.OldPassword, acc.AuthSalt, acc.PasswordHash) {
+	if !crypto.VerifyPassword(req.OldPassword, acc.PasswordHash) {
 		http.Error(w, `{"error":"invalid_old_password"}`, http.StatusUnauthorized)
 		return
 	}
@@ -366,7 +380,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if secretToHash == "" {
 		secretToHash = req.NewPassword
 	}
-	newHash, err := crypto.HashPassword(secretToHash, salt)
+	newHash, err := crypto.HashPassword(secretToHash)
 	if err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
 		return
@@ -405,7 +419,12 @@ func (s *Server) handleUpdateKeyWraps(w http.ResponseWriter, r *http.Request) {
 		acc.RecoveryKeyWrap = req.RecoveryKeyWrap
 	}
 	if req.RecoveryVerifier != "" {
-		acc.RecoveryVerifier = req.RecoveryVerifier
+		v, err := crypto.HashPassword(req.RecoveryVerifier)
+		if err != nil {
+			http.Error(w, "failed to hash recovery verifier", http.StatusInternalServerError)
+			return
+		}
+		acc.RecoveryVerifier = v
 	}
 
 	if err := s.store.UpdateAccount(acc); err != nil {
@@ -450,7 +469,12 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(stateBytes)
 	state := hex.EncodeToString(stateBytes)
 
-	cookieVal := fmt.Sprintf("%s|%s|%s", state, verifier, linkUserID)
+	// The nonce binds the ID token to this login; the callback verifies it.
+	nonceBytes := make([]byte, 16)
+	_, _ = rand.Read(nonceBytes)
+	nonce := hex.EncodeToString(nonceBytes)
+
+	cookieVal := s.ssoTransactionCookie(state, verifier, linkUserID, nonce)
 	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoCookieName,
@@ -462,7 +486,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   300,
 	})
 
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	disc, err := sso.DiscoverEndpoints(r.Context(), s.ssoHTTP, settings.IssuerURL)
 	if err != nil {
 		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
 		return
@@ -488,6 +512,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	q.Set("redirect_uri", redirectURI)
 	q.Set("scope", "openid profile email")
 	q.Set("state", state)
+	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	authURL.RawQuery = q.Encode()
@@ -516,17 +541,13 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(cookie.Value, "|")
-	if len(parts) < 2 || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
+	if len(parts) != 5 || !s.validSSOTransactionCookie(parts) || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
 		http.Error(w, "invalid SSO state parameter", http.StatusBadRequest)
 		return
 	}
-	codeVerifier := parts[1]
-	linkUserID := ""
-	if len(parts) >= 3 {
-		linkUserID = parts[2]
-	}
+	codeVerifier, linkUserID, nonce := parts[1], parts[2], parts[3]
 
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	disc, err := sso.DiscoverEndpoints(r.Context(), s.ssoHTTP, settings.IssuerURL)
 	if err != nil {
 		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
 		return
@@ -541,15 +562,16 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, requestHost(r))
 	}
 
-	tok, err := sso.ExchangeCode(r.Context(), disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
+	tok, err := sso.ExchangeCode(r.Context(), s.ssoHTTP, disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
 	if err != nil {
 		http.Error(w, "failed to exchange token: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	claims, err := sso.ParseClaims(r.Context(), tok.IDToken, tok.AccessToken, disc.UserinfoEndpoint)
+	claims, err := sso.VerifiedClaims(r.Context(), s.verifierFor(settings), tok.IDToken, nonce, tok.AccessToken, disc.UserinfoEndpoint)
 	if err != nil {
-		http.Error(w, "failed to parse claims: "+err.Error(), http.StatusBadGateway)
+		s.auditEvent(r, "sso.token_rejected", "", "", recoveryclient.AuditSafe(err.Error()))
+		http.Error(w, "identity token failed verification", http.StatusBadGateway)
 		return
 	}
 	// The subject is the only stable identifier we bind accounts to.
@@ -604,7 +626,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		salt, _ := crypto.GenerateRandomHex(16)
 		rndPass, _ := crypto.GenerateRandomHex(24)
-		pHash, _ := crypto.HashPassword(rndPass, salt)
+		pHash, _ := crypto.HashPassword(rndPass)
 		role := "user"
 		if claims.Role == "admin" {
 			role = "admin"
@@ -637,6 +659,25 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	s.auditEvent(r, "auth.sso_login", user.ID, "", "user signed in via SSO")
 
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// The callback must not trust the account link target merely because it arrived in an
+// HttpOnly cookie: a caller can supply an arbitrary Cookie header. Authenticate the whole
+// transaction so changing the link target also invalidates state, verifier, and nonce.
+func (s *Server) ssoTransactionCookie(state, verifier, linkUserID, nonce string) string {
+	payload := strings.Join([]string{state, verifier, linkUserID, nonce}, "|")
+	mac := hmac.New(sha256.New, s.saltKey)
+	_, _ = mac.Write([]byte("kybookmarks:sso-transaction\x00" + payload))
+	return payload + "|" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) validSSOTransactionCookie(parts []string) bool {
+	if len(parts) != 5 {
+		return false
+	}
+	want := s.ssoTransactionCookie(parts[0], parts[1], parts[2], parts[3])
+	wantMAC := want[strings.LastIndexByte(want, '|')+1:]
+	return hmac.Equal([]byte(parts[4]), []byte(wantMAC))
 }
 
 func (s *Server) handleSSOUnlink(w http.ResponseWriter, r *http.Request) {

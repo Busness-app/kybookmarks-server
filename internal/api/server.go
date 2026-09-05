@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +15,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/oidcverify"
+	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
@@ -51,6 +54,20 @@ type Server struct {
 
 	// saltKey derives the decoy login salt served for unknown usernames.
 	saltKey []byte
+
+	// syncReplay remembers accepted directory-sync event IDs inside the timestamp window.
+	syncReplay syncauth.Replay
+
+	// ssoHTTP reaches the identity provider; nil means a bounded default. Tests point it
+	// at a TLS stub.
+	ssoHTTP *http.Client
+
+	// One ID-token verifier per (issuer, client id), so the JWKS cache and its refresh
+	// rate limit survive across logins.
+	oidcMu     sync.Mutex
+	oidcIssuer string
+	oidcClient string
+	oidc       *oidcverify.Verifier
 
 	// auditFailures counts audit writes that did not land. /api/health reports only
 	// whether it is non-zero; the count itself stays out of an unauthenticated body.
@@ -105,27 +122,8 @@ func loadOrCreateSaltKey(configDir string) ([]byte, error) {
 	if configDir == "" {
 		return nil, errors.New("decoy salt key: no config directory to persist it in")
 	}
-	path := filepath.Join(configDir, "enum.key")
-	raw, err := os.ReadFile(path)
-	if err == nil {
-		key, decErr := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if decErr != nil || len(key) < 32 {
-			return nil, fmt.Errorf("decoy salt key %s is corrupt; remove it to generate a new one", path)
-		}
-		return key, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("decoy salt key: %w", err)
-	}
-
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("decoy salt key: no entropy: %w", err)
-	}
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return nil, fmt.Errorf("decoy salt key: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+	key, err := keyfile.LoadOrCreate(filepath.Join(configDir, "enum.key"), 32)
+	if err != nil {
 		return nil, fmt.Errorf("decoy salt key: %w", err)
 	}
 	return key, nil
@@ -150,7 +148,36 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		cfg:           cfg,
 		loginAttempts: make(map[string]*loginAttemptTracker),
 		saltKey:       saltKey,
+		syncReplay:    syncauth.NewMemoryReplay(0, 0),
 	}, nil
+}
+
+// verifierFor returns the cached verifier for the current SSO settings, rebuilding it when
+// an admin changes the issuer or client id.
+func (s *Server) verifierFor(settings sso.SSOSettings) *oidcverify.Verifier {
+	s.oidcMu.Lock()
+	defer s.oidcMu.Unlock()
+	if s.oidc == nil || s.oidcIssuer != settings.IssuerURL || s.oidcClient != settings.ClientID {
+		s.oidc = sso.NewVerifier(settings.IssuerURL, settings.ClientID, s.ssoHTTP)
+		s.oidcIssuer, s.oidcClient = settings.IssuerURL, settings.ClientID
+	}
+	return s.oidc
+}
+
+// syncAuth verifies the KySignOn signature before the handler decodes anything. An empty
+// SYNC_SECRET is a 401 from the middleware (keyFn error), which keeps the old fail-closed
+// behaviour without a second check in the handler.
+func (s *Server) syncAuth() func(http.Handler) http.Handler {
+	keyFn := func(*http.Request) ([]byte, error) {
+		if s.cfg.SyncSecret == "" {
+			return nil, errors.New("SYNC_SECRET is not set")
+		}
+		return []byte(s.cfg.SyncSecret), nil
+	}
+	onReject := func(r *http.Request, err error) {
+		log.Printf("sync: rejected event from %s: %v", clientIP(r), err)
+	}
+	return syncauth.Middleware(keyFn, syncauth.Options{Replay: s.syncReplay}, 0, onReject)
 }
 
 func (s *Server) Routes() http.Handler {
@@ -219,7 +246,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/audit/verify", s.withAdmin(s.handleAdminAuditVerify))
 
 	// Suite Sync Webhook (Signed by KySignOn)
-	mux.HandleFunc("POST /api/sync/events", s.handleDirectorySyncEvent)
+	mux.Handle("POST /api/sync/events", s.syncAuth()(http.HandlerFunc(s.handleDirectorySyncEvent)))
 
 	// SPA Static File Serving
 	if s.cfg.WebDir != "" {
