@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/Busness-app/ky-primitives/password"
 )
@@ -46,23 +45,6 @@ func GeneratePIN() (string, error) {
 	}
 	num := (int(b[0])<<16 | int(b[1])<<8 | int(b[2])) % 1000000
 	return fmt.Sprintf("%06d", num), nil
-}
-
-// GeneratePaperRecoveryKey generates a 24-character human-readable recovery key (e.g. XXXX-XXXX-XXXX-XXXX).
-func GeneratePaperRecoveryKey() (string, error) {
-	const charset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // Crockford-ish base32 (no 0, O, 1, I)
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	var sb strings.Builder
-	for i, v := range b {
-		if i > 0 && i%4 == 0 {
-			sb.WriteByte('-')
-		}
-		sb.WriteByte(charset[int(v)%len(charset)])
-	}
-	return sb.String(), nil
 }
 
 // HashPassword returns a PHC-encoded Argon2id hash at the suite parameters

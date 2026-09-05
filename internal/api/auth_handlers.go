@@ -123,7 +123,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	cleanUser := strings.ToLower(strings.TrimSpace(req.Username))
 
 	// Recovery mints a session and returns the vault key wrappers, so it gets the
-	// same lockout as login. Without it this is an unmetered scrypt oracle.
+	// same lockout as login. Without it this is an unmetered Argon2id oracle.
 	s.loginAttemptsMu.Lock()
 	tracker, exists := s.loginAttempts[cleanUser]
 	if exists && time.Now().Before(tracker.blockedUntil) {
@@ -149,8 +149,9 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cleanSecret := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(req.RecoverySecret)), "-", "")
-	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.RecoveryVerifier) {
+	// The browser sends PBKDF2(paperKey), never the paper key itself.
+	secret := strings.TrimSpace(req.RecoverySecret)
+	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(secret, acc.RecoveryVerifier) {
 		s.recordFailedLogin(cleanUser)
 		s.auditEvent(r, "auth.recovery_failed", acc.ID, "", "failed recovery key attempt")
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
@@ -261,6 +262,17 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The browser posts PBKDF2(paperKey); it is stored exactly like a password.
+	recoveryVerifier := ""
+	if req.RecoveryVerifier != "" {
+		v, err := crypto.HashPassword(req.RecoveryVerifier)
+		if err != nil {
+			http.Error(w, "failed to hash recovery verifier", http.StatusInternalServerError)
+			return
+		}
+		recoveryVerifier = v
+	}
+
 	admin := &store.Account{
 		Username:         req.Username,
 		Email:            req.Email,
@@ -272,7 +284,7 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		Status:           "active",
 		PasswordKeyWrap:  req.PasswordKeyWrap,
 		RecoveryKeyWrap:  req.RecoveryKeyWrap,
-		RecoveryVerifier: req.RecoveryVerifier,
+		RecoveryVerifier: recoveryVerifier,
 	}
 
 	// Re-check the account count inside the insert. Hashing above is deliberately
@@ -405,7 +417,12 @@ func (s *Server) handleUpdateKeyWraps(w http.ResponseWriter, r *http.Request) {
 		acc.RecoveryKeyWrap = req.RecoveryKeyWrap
 	}
 	if req.RecoveryVerifier != "" {
-		acc.RecoveryVerifier = req.RecoveryVerifier
+		v, err := crypto.HashPassword(req.RecoveryVerifier)
+		if err != nil {
+			http.Error(w, "failed to hash recovery verifier", http.StatusInternalServerError)
+			return
+		}
+		acc.RecoveryVerifier = v
 	}
 
 	if err := s.store.UpdateAccount(acc); err != nil {
