@@ -62,10 +62,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	secret := req.AuthSecret
 	verified := false
 	if secret != "" {
-		verified = crypto.VerifyPassword(secret, acc.AuthSalt, acc.PasswordHash)
+		verified = crypto.VerifyPassword(secret, acc.PasswordHash)
 	}
 	if !verified && req.Password != "" {
-		verified = crypto.VerifyPassword(req.Password, acc.AuthSalt, acc.PasswordHash)
+		verified = crypto.VerifyPassword(req.Password, acc.PasswordHash)
 	}
 
 	if !verified {
@@ -150,7 +150,7 @@ func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cleanSecret := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(req.RecoverySecret)), "-", "")
-	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.AuthSalt, acc.RecoveryVerifier) {
+	if acc.RecoveryVerifier == "" || !crypto.VerifyPassword(cleanSecret, acc.RecoveryVerifier) {
 		s.recordFailedLogin(cleanUser)
 		s.auditEvent(r, "auth.recovery_failed", acc.ID, "", "failed recovery key attempt")
 		http.Error(w, `{"error":"invalid_recovery_key"}`, http.StatusUnauthorized)
@@ -255,7 +255,7 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 	if secretToHash == "" {
 		secretToHash = req.Password
 	}
-	hash, err := crypto.HashPassword(secretToHash, salt)
+	hash, err := crypto.HashPassword(secretToHash)
 	if err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
 		return
@@ -353,7 +353,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !crypto.VerifyPassword(req.OldPassword, acc.AuthSalt, acc.PasswordHash) {
+	if !crypto.VerifyPassword(req.OldPassword, acc.PasswordHash) {
 		http.Error(w, `{"error":"invalid_old_password"}`, http.StatusUnauthorized)
 		return
 	}
@@ -366,7 +366,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if secretToHash == "" {
 		secretToHash = req.NewPassword
 	}
-	newHash, err := crypto.HashPassword(secretToHash, salt)
+	newHash, err := crypto.HashPassword(secretToHash)
 	if err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
 		return
@@ -604,7 +604,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		salt, _ := crypto.GenerateRandomHex(16)
 		rndPass, _ := crypto.GenerateRandomHex(24)
-		pHash, _ := crypto.HashPassword(rndPass, salt)
+		pHash, _ := crypto.HashPassword(rndPass)
 		role := "user"
 		if claims.Role == "admin" {
 			role = "admin"

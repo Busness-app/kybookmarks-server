@@ -2,21 +2,13 @@ package crypto
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
 
-	"golang.org/x/crypto/scrypt"
-)
-
-const (
-	ScryptN      = 32768
-	ScryptR      = 8
-	ScryptP      = 1
-	ScryptKeyLen = 32
+	"github.com/Busness-app/ky-primitives/password"
 )
 
 // GenerateRandomBytes returns n cryptographically secure random bytes.
@@ -73,26 +65,15 @@ func GeneratePaperRecoveryKey() (string, error) {
 	return sb.String(), nil
 }
 
-// HashPassword hashes a password or auth secret using scrypt.
-func HashPassword(secret, saltHex string) (string, error) {
-	salt, err := hex.DecodeString(saltHex)
-	if err != nil {
-		return "", fmt.Errorf("invalid salt hex: %w", err)
-	}
-
-	dk, err := scrypt.Key([]byte(secret), salt, ScryptN, ScryptR, ScryptP, ScryptKeyLen)
-	if err != nil {
-		return "", fmt.Errorf("scrypt derivation failed: %w", err)
-	}
-
-	return hex.EncodeToString(dk), nil
+// HashPassword returns a PHC-encoded Argon2id hash at the suite parameters
+// (RFC 9106 second profile). The hash carries its own salt and cost.
+func HashPassword(secret string) (string, error) {
+	return password.Hash(secret)
 }
 
-// VerifyPassword verifies a password against a stored scrypt hash.
-func VerifyPassword(secret, saltHex, storedHashHex string) bool {
-	computed, err := HashPassword(secret, saltHex)
-	if err != nil {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(computed), []byte(storedHashHex)) == 1
+// VerifyPassword compares in constant time. A malformed stored hash, or a
+// derivation shed under memory pressure, is false, never a panic.
+func VerifyPassword(secret, encoded string) bool {
+	ok, err := password.Verify(secret, encoded)
+	return err == nil && ok
 }

@@ -47,7 +47,7 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	salt, _ := crypto.GenerateRandomHex(16)
-	hash, err := crypto.HashPassword(req.Password, salt)
+	hash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		http.Error(w, "failed to hash password", http.StatusInternalServerError)
 		return
@@ -121,7 +121,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) >= 12 {
 		salt, _ := crypto.GenerateRandomHex(16)
-		hash, _ := crypto.HashPassword(req.Password, salt)
+		hash, _ := crypto.HashPassword(req.Password)
 		user.PasswordHash = hash
 		user.AuthSalt = salt
 	}
@@ -260,7 +260,7 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 		if existing == nil {
 			salt, _ := crypto.GenerateRandomHex(16)
 			rndPass, _ := crypto.GenerateRandomHex(24)
-			hash, _ := crypto.HashPassword(rndPass, salt)
+			hash, _ := crypto.HashPassword(rndPass)
 			role := "user"
 			if event.User.Role == "admin" {
 				role = "admin"

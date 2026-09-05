@@ -89,7 +89,7 @@ func TestRecoveryRefusesSuspendedAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier, err := crypto.HashPassword(secret, salt)
+	verifier, err := crypto.HashPassword(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
