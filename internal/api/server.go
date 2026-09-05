@@ -18,9 +18,11 @@ import (
 
 	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/oidcverify"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
+	"github.com/Busness-app/kybookmarks-server/internal/backup"
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
 	"github.com/Busness-app/kybookmarks-server/internal/devices"
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
@@ -34,11 +36,24 @@ const (
 	ssoCookieName     = "kybookmark_sso_state"
 )
 
+// BackupConfig is the env-derived side of the backup contract. The live schedule is an
+// admin setting; DepositInterval is only its default.
+type BackupConfig struct {
+	Dir                  string
+	Keep                 int
+	DepositInterval      time.Duration
+	AllowPrivateRecovery bool
+}
+
 type Config struct {
 	WebDir     string
 	DataDir    string
 	ConfigDir  string
 	SyncSecret string
+	Backup     BackupConfig
+	// DeploymentKey seals the KyRecovery token at rest (CONFIG_DIR/deployment.key).
+	DeploymentKey []byte
+	AppVersion    string
 }
 
 type Server struct {
@@ -57,6 +72,10 @@ type Server struct {
 
 	// syncReplay remembers accepted directory-sync event IDs inside the timestamp window.
 	syncReplay syncauth.Replay
+
+	// recovery reaches KyRecovery; sealer protects its token at rest. Tests swap both.
+	recovery recoveryClient
+	sealer   recoveryclient.Sealer
 
 	// ssoHTTP reaches the identity provider; nil means a bounded default. Tests point it
 	// at a TLS stub.
@@ -139,6 +158,10 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 	if err != nil {
 		return nil, err
 	}
+	sealer, err := backup.NewSealer(cfg.DeploymentKey)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		store:         s,
 		vault:         vm,
@@ -149,6 +172,8 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		loginAttempts: make(map[string]*loginAttemptTracker),
 		saltKey:       saltKey,
 		syncReplay:    syncauth.NewMemoryReplay(0, 0),
+		recovery:      recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery}),
+		sealer:        sealer,
 	}, nil
 }
 
@@ -244,6 +269,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/sso", s.withAdmin(s.handleAdminSaveSSO))
 	mux.HandleFunc("GET /api/admin/audit", s.withAdmin(s.handleAdminAudit))
 	mux.HandleFunc("POST /api/admin/audit/verify", s.withAdmin(s.handleAdminAuditVerify))
+
+	// Backups. Admin role plus CSRF is this product's step-up equivalent.
+	mux.HandleFunc("POST /api/admin/backup/drill", s.withAdmin(s.handleBackupDrill))
+	mux.HandleFunc("POST /api/admin/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
+	mux.HandleFunc("POST /api/admin/backup/pair-remote", s.withAdmin(s.handlePairRemote))
+	mux.HandleFunc("POST /api/admin/backup/deposit", s.withAdmin(s.handleRunBackup))
+	mux.HandleFunc("DELETE /api/admin/backup/pairing", s.withAdmin(s.handleUnpair))
+	mux.HandleFunc("POST /api/admin/backup/pin-key", s.withAdmin(s.handlePinKey))
+	mux.HandleFunc("PUT /api/admin/backup/schedule", s.withAdmin(s.handleSetSchedule))
+	mux.HandleFunc("GET /api/admin/backup/status", s.withAdmin(s.handleBackupStatus))
 
 	// Suite Sync Webhook (Signed by KySignOn)
 	mux.Handle("POST /api/sync/events", s.syncAuth()(http.HandlerFunc(s.handleDirectorySyncEvent)))

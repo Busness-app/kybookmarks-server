@@ -11,6 +11,7 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
 6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
+8. **KyRecovery Backups**: sealed `kycap/3` capsules through `ky-primitives/recoveryclient`: pair with KyRecovery or pin the suite key by hand, local copies in `KYBOOKMARKS_BACKUP_DIR`, an admin-set schedule, restore drill, and a `restore` subcommand. Every backup route, including the capsule export, is a CSRF-protected admin `POST`/`PUT`/`DELETE`; a GET never exports. See "KyRecovery backups" below and `docs/RESTORE.md`.
 
 ## Audit chain
 
@@ -24,6 +25,11 @@ proves nothing.
 | `AUDIT_KEY` | Optional. Exactly 32 bytes as hex (`openssl rand -hex 32`) or base64. A value that is set but malformed refuses to start. Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
 | `HMAC_SECRET` | **Legacy verification only.** Entries written before the chain was keyed are chained with this; it is never used to write. Leave it set to whatever the deployment used previously, or unset to fall back to the published constant those entries actually used. |
 | `SYNC_SECRET` | Signs the `/api/sync/events` directory webhook. **No default**: unset makes the endpoint reject every request. |
+| `KYBOOKMARKS_BACKUP_DIR` | Directory for sealed local backup copies. Unset means none. |
+| `KYBOOKMARKS_BACKUP_KEEP` | Local copies retained, default 7, at least 1. Refused at startup below 1. |
+| `KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL` | Default schedule only (`24h`); the admin's setting wins. `0` off, floor `15m`. |
+| `KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY` | Admit private and CGNAT KyRecovery destinations. HTTPS stays mandatory. Logged at startup and on the pairing audit row. |
+| `deployment.key` | Minted into `CONFIG_DIR` by `keyfile` on first run. Seals the KyRecovery token at rest and nothing else. |
 
 Rules for anyone touching this package:
 
@@ -134,12 +140,36 @@ State, PKCE verifier, optional account-link target, and nonce are one indivisibl
 the callback refuses the cookie before token exchange if any field was altered. Account linking
 must never trust a caller-supplied user ID without that binding.
 
+## KyRecovery backups
+
+`internal/backup` holds only what is this product's: `Collect` (SQLite `VACUUM INTO` through
+the live handle, the four `CONFIG_DIR` keys, `sso.json`, `recovery.pub`, the audit log, a
+manifest), the drill `Checks`, the `Settings` adapter over the `settings` table, the `Sealer`
+under `deployment.key` (label `kybookmarks:setting:kyrecovery_token`), and `AuditDetails`.
+Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore are
+`ky-primitives/recoveryclient`; do not reimplement any of them here.
+
+- Service name is `backup.AppName` (`KyBookmarks`) everywhere: the pairing claim, every
+  manifest, local copy names.
+- **Step-up:** this product has none. Admin role plus CSRF (`withAdmin`) is the equivalent for
+  every `/api/admin/backup/*` route; `TestBackupRoutesRequireAdmin` pins it.
+- An export that cannot be recorded on the audit chain is refused (`auditCritical`);
+  `TestExportCapsuleIsRefusedWhenAuditFails` and the ablation pin it.
+- Unpair deletes the URL and sealed token rows only; the key pin stays. `TestUnpairKeepsPin`
+  and the ablation pin it.
+- `Collect` refuses without `audit.key`, `audit.state`, `enum.key`, `deployment.key`. On a
+  fresh install all four exist after the first audit entry, which `/api/setup` writes.
+- The decrypt boundary is `cmd/server/backup.go: restore` and nothing else;
+  `internal/backup/nodecrypt_test.go` walks the repo with `guardtest`.
+- The backup loop starts unconditionally and polls the schedule setting every minute.
+
 ## Verification & Build Commands
 
 - **Backend Unit & Integration Tests**: `go test -v ./...`
 - **Frontend Production Build**: `cd frontend && npm run build`
 - **Docker Production Image**: `docker build -t kybookmarks-server:latest .`
 - **Audit Ablation Suite**: `python3 scripts/ablate.py`
+- **Backup export regression**: `go test ./internal/api -run 'TestExportCapsule'`
 
 # Ponytail, lazy senior dev mode
 
@@ -177,4 +207,6 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
-- KyRecovery pairing and deposit: `docs/superpowers/plans/2026-09-05-kybookmarks-wires-recoveryclient.md`. The suite contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` v2.0.0; the product side is `ky-primitives/recoveryclient`. Do not copy `internal/backup` from another product.
+- `internal/backup`: what a capsule carries and how the drill judges a restore; adapters over `ky-primitives/recoveryclient`. The suite contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` v2.0.0.
+- `docs/RESTORE.md`: the operator runbook for restoring from a capsule with custodian shares, proven against the code.
+- `README.md`: operator-facing run and disaster-recovery notes, every env var.

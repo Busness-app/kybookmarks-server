@@ -42,9 +42,12 @@ func setupTestServer(t *testing.T) (*Server, http.Handler, func()) {
 	}
 
 	cfg := Config{
-		DataDir:    tmpDir,
-		ConfigDir:  filepath.Join(tmpDir, "config"),
-		SyncSecret: "test-sync-secret",
+		DataDir:       tmpDir,
+		ConfigDir:     filepath.Join(tmpDir, "config"),
+		SyncSecret:    "test-sync-secret",
+		Backup:        BackupConfig{Keep: 7, DepositInterval: 24 * time.Hour},
+		DeploymentKey: bytes.Repeat([]byte{7}, 32),
+		AppVersion:    "test",
 	}
 
 	srv, err := NewServer(dbStore, vm, ds, ss, al, cfg)

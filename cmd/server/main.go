@@ -8,21 +8,96 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
+
 	"github.com/Busness-app/kybookmarks-server/internal/api"
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
+	"github.com/Busness-app/kybookmarks-server/internal/backup"
 	"github.com/Busness-app/kybookmarks-server/internal/devices"
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
 	"github.com/Busness-app/kybookmarks-server/internal/store"
 	"github.com/Busness-app/kybookmarks-server/internal/vault"
 )
 
+// appVersion is recorded in every capsule manifest; bump with releases.
+const appVersion = "0.2.0"
+
+// loadBackupConfig reads the KYBOOKMARKS_BACKUP_* variables. Keep below one and an
+// interval under the lib's floor are refused here, at startup, not at the first backup.
+func loadBackupConfig() (api.BackupConfig, error) {
+	cfg := api.BackupConfig{Dir: os.Getenv("KYBOOKMARKS_BACKUP_DIR"), Keep: 7, DepositInterval: 24 * time.Hour}
+	if v := os.Getenv("KYBOOKMARKS_BACKUP_KEEP"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("KYBOOKMARKS_BACKUP_KEEP: must be an integer of at least 1, got %q", v)
+		}
+		cfg.Keep = n
+	}
+	if v := os.Getenv("KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL: %w", err)
+		}
+		if d != 0 && d < recoveryclient.MinInterval {
+			return cfg, fmt.Errorf("KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL: %s is below the 15m floor (0 disables)", v)
+		}
+		cfg.DepositInterval = d
+	}
+	cfg.AllowPrivateRecovery = strings.EqualFold(os.Getenv("KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY"), "true")
+	return cfg, nil
+}
+
+// env is what every subcommand reads from the environment.
+type env struct {
+	port              string
+	webDir            string
+	legacyAuditSecret string
+	cfg               api.Config
+}
+
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "5869"
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "serve":
+		case "backup-drill":
+			runBackupDrill()
+			return
+		case "export-capsule":
+			runExportCapsule(argOr(2, backup.AppName+".kycap"))
+			return
+		case "deposit":
+			runDeposit()
+			return
+		case "restore":
+			runRestore(os.Args[2:])
+			return
+		default:
+			fmt.Fprintln(os.Stderr, "usage: kybookmarks-server [serve|backup-drill|export-capsule <out>|deposit|restore -capsule <file> -to <dir> [-service <name>]]")
+			os.Exit(2)
+		}
+	}
+	serve()
+}
+
+func argOr(i int, def string) string {
+	if len(os.Args) > i {
+		return os.Args[i]
+	}
+	return def
+}
+
+// loadEnv reads every variable the server and the backup subcommands share, and mints the
+// deployment key if this is the first run.
+func loadEnv() (env, error) {
+	e := env{port: os.Getenv("PORT")}
+	if e.port == "" {
+		e.port = "5869"
 	}
 
 	dataDir := os.Getenv("DATA_DIR")
@@ -47,18 +122,49 @@ func main() {
 
 	// HMAC_SECRET only verifies audit entries written before the chain was keyed.
 	// The live chain key comes from AUDIT_KEY or CONFIG_DIR/audit.key; see internal/audit.
-	legacyAuditSecret := os.Getenv("HMAC_SECRET")
+	e.legacyAuditSecret = os.Getenv("HMAC_SECRET")
 
 	// No default: an unset SYNC_SECRET disables the directory sync webhook rather
 	// than authenticating it with a value published in this repository.
 	syncSecret := os.Getenv("SYNC_SECRET")
-	if syncSecret == "" {
-		log.Println("SYNC_SECRET is not set: /api/sync/events will reject all requests")
+
+	backupCfg, err := loadBackupConfig()
+	if err != nil {
+		return e, err
+	}
+	deploymentKey, err := keyfile.LoadOrCreate(filepath.Join(configDir, "deployment.key"), 32)
+	if err != nil {
+		return e, fmt.Errorf("deployment key: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return e, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+	e.webDir = webDir
+	e.cfg = api.Config{
+		WebDir:        webDir,
+		DataDir:       dataDir,
+		ConfigDir:     configDir,
+		SyncSecret:    syncSecret,
+		Backup:        backupCfg,
+		DeploymentKey: deploymentKey,
+		AppVersion:    appVersion,
 	}
+	return e, nil
+}
+
+func serve() {
+	e, err := loadEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if e.cfg.SyncSecret == "" {
+		log.Println("SYNC_SECRET is not set: /api/sync/events will reject all requests")
+	}
+	if e.cfg.Backup.AllowPrivateRecovery {
+		log.Println("KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY is on: private and CGNAT KyRecovery destinations admitted (HTTPS still required)")
+	}
+	cfg, port, webDir, dataDir := e.cfg, e.port, e.webDir, e.cfg.DataDir
 
 	dbStore, err := store.NewStore(dataDir)
 	if err != nil {
@@ -70,22 +176,19 @@ func main() {
 	deviceStore := devices.NewStore(dbStore)
 	ssoStore := sso.NewStore(filepath.Join(dataDir, "config"))
 
-	auditLogger, err := audit.NewLogger(filepath.Join(dataDir, "audit"), configDir, legacyAuditSecret)
+	auditLogger, err := audit.NewLogger(filepath.Join(dataDir, "audit"), cfg.ConfigDir, e.legacyAuditSecret)
 	if err != nil {
 		log.Fatalf("Failed to initialize audit logger: %v", err)
-	}
-
-	cfg := api.Config{
-		WebDir:     webDir,
-		DataDir:    dataDir,
-		ConfigDir:  configDir,
-		SyncSecret: syncSecret,
 	}
 
 	srv, err := api.NewServer(dbStore, vaultMgr, deviceStore, ssoStore, auditLogger, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
+
+	loopCtx, stopLoop := context.WithCancel(context.Background())
+	defer stopLoop()
+	go backupLoop(loopCtx, dbStore, cfg, auditLogger)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
