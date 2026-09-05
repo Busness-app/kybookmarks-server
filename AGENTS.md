@@ -11,7 +11,7 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
 6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
-8. **KyRecovery Backups**: sealed `kycap/3` capsules through `ky-primitives/recoveryclient`: pair with KyRecovery or pin the suite key by hand, local copies in `KYBOOKMARKS_BACKUP_DIR`, an admin-set schedule, restore drill, and a `restore` subcommand. See "KyRecovery backups" below and `docs/RESTORE.md`.
+8. **KyRecovery Backups**: sealed `kycap/3` capsules through `ky-primitives/recoveryclient`: pair with KyRecovery or pin the suite key by hand, local copies in `KYBOOKMARKS_BACKUP_DIR`, an admin-set schedule, restore drill, and a `restore` subcommand. Every backup route, including the capsule export, is a CSRF-protected admin `POST`/`PUT`/`DELETE`; a GET never exports. See "KyRecovery backups" below and `docs/RESTORE.md`.
 
 ## Audit chain
 
@@ -170,6 +170,7 @@ Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore a
 - **Frontend Production Build**: `cd frontend && npm run build`
 - **Docker Production Image**: `docker build -t kybookmarks-server:latest .`
 - **Audit Ablation Suite**: `python3 scripts/ablate.py`
+- **Backup export regression**: `go test ./internal/api -run 'TestExportCapsule'`
 
 # Ponytail, lazy senior dev mode
 

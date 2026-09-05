@@ -684,7 +684,7 @@ git commit -m "backup: adapters over ky-primitives/recoveryclient; collector and
 | Method | Path | Handler | Response |
 |---|---|---|---|
 | POST | /api/admin/backup/drill | handleBackupDrill | `recoveryclient.DrillResult` |
-| GET | /api/admin/backup/export-capsule | handleExportCapsule | `.kycap` attachment |
+| POST | /api/admin/backup/export-capsule | handleExportCapsule | `.kycap` attachment; CSRF required |
 | POST | /api/admin/backup/pair-remote | handlePairRemote | `{recovery_key_id, threshold, total_shares}` |
 | POST | /api/admin/backup/deposit | handleRunBackup | `recoveryclient.Result` |
 | DELETE | /api/admin/backup/pairing | handleUnpair | `{paired:false}` |
@@ -794,7 +794,7 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 
 ```go
 	mux.HandleFunc("POST /api/admin/backup/drill", s.withAdmin(s.handleBackupDrill))
-	mux.HandleFunc("GET /api/admin/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
+mux.HandleFunc("POST /api/admin/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
 	mux.HandleFunc("POST /api/admin/backup/pair-remote", s.withAdmin(s.handlePairRemote))
 	mux.HandleFunc("POST /api/admin/backup/deposit", s.withAdmin(s.handleRunBackup))
 	mux.HandleFunc("DELETE /api/admin/backup/pairing", s.withAdmin(s.handleUnpair))
@@ -1007,7 +1007,7 @@ git commit -m "server: subcommands, minute-polling backup loop, restore via reco
 
 Copy `AdminBackup.tsx`; then: `secureFetch` → `getJSON/postJSON/putJSON/deleteJSON` from `../lib/api` (all four already exist at `api.ts:49-54`); paths `/api/admin/backup/*` stay; delete the `requestGrant` step-up prompt and its imports; `KYSIGNON_BACKUP_DIR` → `KYBOOKMARKS_BACKUP_DIR`; the "what a capsule carries" list reads `status.members`. Keep: four fact cards (key, KyRecovery, local copies, schedule), one action row (Back up now, Download capsule, Run drill), schedule form (minutes → `interval_sec`, off = 0, min from `min_interval_sec`), pairing panel with Unpair, key-by-hand panel, warnings for no key, no destination, schedule off. Unpair copy: "Removes the URL and sealed token rows. The key pin, receipts and local copies stay. The credential is dead only when the KyRecovery admin revokes it."
 
-Download capsule: `window.location.assign('/api/admin/backup/export-capsule')` is a GET with cookies; it needs no CSRF header because `withAdmin` only checks CSRF on POST/PUT/DELETE.
+Download capsule: use an authenticated POST/blob request to `/api/admin/backup/export-capsule`; `withAdmin` applies the CSRF header before the server collects and seals the payload.
 
 - [ ] **Step 2: Tab**
 
@@ -1184,7 +1184,7 @@ Post to `kybookmarks-kyrecovery-deposit` (skill `myslop-handoff`): spec rows don
 
 ## Careful
 
-- `withAdmin` checks CSRF on POST/PUT/DELETE; the frontend must send `X-CSRF-Token` on every backup call except the export download.
+- `withAdmin` checks CSRF on POST/PUT/DELETE; the frontend must send `X-CSRF-Token` on every backup call, including the export download.
 - The capsule caps in `capsule` are exported constants; a large `audit.log` can push a capsule past `MaxCapsuleFileBytes`. The 413 path exists; if it fires in the homelab, the answer is log rotation, not a bigger cap.
 - Never HTML-escape a value inside an inline `on*=` handler; React props are fine, `dangerouslySetInnerHTML` is not.
 - `settings` rows the lib writes: `kyrecovery_key_id, kyrecovery_threshold, kyrecovery_total_shares, kyrecovery_url, kyrecovery_token_enc, kyrecovery_last_deposit, backup_interval_sec, backup_last_attempt`. Status must never return `kyrecovery_token_enc`.

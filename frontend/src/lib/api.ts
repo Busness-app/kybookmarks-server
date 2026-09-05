@@ -49,6 +49,24 @@ export async function apiRequest<T = any>(
 export const getJSON = <T>(url: string) => apiRequest<T>(url, { method: 'GET' });
 export const postJSON = <T>(url: string, body?: any) =>
   apiRequest<T>(url, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+// postBlob downloads a file through a CSRF-protected POST and keeps the filename the
+// server chose, so a capsule lands under its capsule ID rather than a generic name.
+export async function postBlob(url: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
+  const headers = new Headers({ 'X-CSRF-Token': getCSRFToken() });
+  const response = await fetch(url, { method: 'POST', headers, credentials: 'same-origin' });
+  if (!response.ok) {
+    let msg = `HTTP Error ${response.status}`;
+    try {
+      const errData = await response.json();
+      msg = errData.message || errData.error || msg;
+    } catch {
+      // not JSON; keep the status
+    }
+    throw new Error(msg);
+  }
+  const match = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') ?? '');
+  return { blob: await response.blob(), filename: match ? match[1] : fallbackName };
+}
 export const putJSON = <T>(url: string, body?: any) =>
   apiRequest<T>(url, { method: 'PUT', body: body ? JSON.stringify(body) : undefined });
 export const deleteJSON = <T>(url: string) => apiRequest<T>(url, { method: 'DELETE' });

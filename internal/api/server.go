@@ -272,7 +272,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Backups. Admin role plus CSRF is this product's step-up equivalent.
 	mux.HandleFunc("POST /api/admin/backup/drill", s.withAdmin(s.handleBackupDrill))
-	mux.HandleFunc("GET /api/admin/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
+	mux.HandleFunc("POST /api/admin/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
 	mux.HandleFunc("POST /api/admin/backup/pair-remote", s.withAdmin(s.handlePairRemote))
 	mux.HandleFunc("POST /api/admin/backup/deposit", s.withAdmin(s.handleRunBackup))
 	mux.HandleFunc("DELETE /api/admin/backup/pairing", s.withAdmin(s.handleUnpair))

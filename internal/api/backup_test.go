@@ -275,10 +275,26 @@ func TestStatusNeverCarriesToken(t *testing.T) {
 }
 
 func TestExportCapsuleUnpairedIs412(t *testing.T) {
+	_, handler, sess, csrf, cleanup := backupFixture(t)
+	defer cleanup()
+	if w := do(t, handler, http.MethodPost, "/api/admin/backup/export-capsule", nil, sess, csrf); w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("export unpaired: %d", w.Code)
+	}
+}
+
+func TestExportCapsuleRejectsGET(t *testing.T) {
 	_, handler, sess, _, cleanup := backupFixture(t)
 	defer cleanup()
-	if w := do(t, handler, http.MethodGet, "/api/admin/backup/export-capsule", nil, sess, nil); w.Code != http.StatusPreconditionFailed {
-		t.Fatalf("export unpaired: %d", w.Code)
+	if w := do(t, handler, http.MethodGet, "/api/admin/backup/export-capsule", nil, sess, nil); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET export: %d, want 405", w.Code)
+	}
+}
+
+func TestExportCapsuleRequiresCSRF(t *testing.T) {
+	_, handler, sess, _, cleanup := backupFixture(t)
+	defer cleanup()
+	if w := do(t, handler, http.MethodPost, "/api/admin/backup/export-capsule", nil, sess, nil); w.Code != http.StatusForbidden {
+		t.Fatalf("POST export without CSRF: %d, want 403", w.Code)
 	}
 }
 
@@ -288,7 +304,7 @@ func TestExportCapsuleIsASealedContainer(t *testing.T) {
 	if w := pinKey(t, handler, sess, csrf, freshPin(t), 2, 3); w.Code != http.StatusOK {
 		t.Fatal(w.Body.String())
 	}
-	w := do(t, handler, http.MethodGet, "/api/admin/backup/export-capsule", nil, sess, nil)
+	w := do(t, handler, http.MethodPost, "/api/admin/backup/export-capsule", nil, sess, csrf)
 	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/octet-stream" {
 		t.Fatalf("export: %d %s", w.Code, w.Header().Get("Content-Type"))
 	}
@@ -314,7 +330,7 @@ func TestExportCapsuleIsRefusedWhenAuditFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(logPath, 0600) })
-	w := do(t, handler, http.MethodGet, "/api/admin/backup/export-capsule", nil, sess, nil)
+	w := do(t, handler, http.MethodPost, "/api/admin/backup/export-capsule", nil, sess, csrf)
 	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "audit_failed") {
 		t.Fatalf("export with a dead audit chain: %d %s", w.Code, w.Body.String())
 	}
@@ -330,7 +346,7 @@ func TestBackupRoutesRequireAdmin(t *testing.T) {
 	usess, ucsrf := sessionFor(t, srv, user)
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/admin/backup/drill"},
-		{http.MethodGet, "/api/admin/backup/export-capsule"},
+		{http.MethodPost, "/api/admin/backup/export-capsule"},
 		{http.MethodPost, "/api/admin/backup/pair-remote"},
 		{http.MethodPost, "/api/admin/backup/deposit"},
 		{http.MethodDelete, "/api/admin/backup/pairing"},

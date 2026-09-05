@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getJSON, postJSON, putJSON, deleteJSON, toErrorMessage } from '../lib/api';
+import { getJSON, postJSON, postBlob, putJSON, deleteJSON, toErrorMessage } from '../lib/api';
 import {
   Play,
   Download,
@@ -184,10 +184,21 @@ export const AdminBackup: React.FC = () => {
     }
   };
 
-  // A GET with cookies; withAdmin checks CSRF only on state-changing methods, and the
-  // export is recorded on the audit chain before a byte is sent.
-  const downloadCapsule = () => {
-    window.location.assign('/api/admin/backup/export-capsule');
+  // A CSRF-protected POST, fetched and saved from a blob so the server's filename is kept;
+  // the export is recorded on the audit chain before a byte is sent.
+  const downloadCapsule = async () => {
+    setRunError('');
+    try {
+      const { blob, filename } = await postBlob('/api/admin/backup/export-capsule', 'KyBookmarks.kycap');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setRunError(toErrorMessage(err, 'Capsule export failed'));
+    }
   };
 
   const runDrill = async () => {
