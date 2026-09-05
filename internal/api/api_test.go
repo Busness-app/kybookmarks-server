@@ -230,7 +230,7 @@ func TestE2EAPIWorkflows(t *testing.T) {
 // syncRequest posts a directory-sync event, optionally signing it as KySignOn does.
 func syncRequest(t *testing.T, handler http.Handler, secret, body string) int {
 	t.Helper()
-	return syncRequestTyped(t, handler, secret, "user.create", "evt-"+body[:8], body, time.Now())
+	return syncRequestTyped(t, handler, secret, "user.created", "evt-"+body[:8], body, time.Now())
 }
 
 func syncRequestTyped(t *testing.T, handler http.Handler, secret, eventType, eventID, body string, at time.Time) int {
@@ -253,7 +253,7 @@ func TestDirectorySyncRequiresSignature(t *testing.T) {
 	srv, handler, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	const body = `{"action":"user.create","user":{"id":"sso-1","username":"mallory","role":"admin"}}`
+	const body = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-1","userName":"mallory","roles":[{"value":"admin","primary":true}],"active":true}`
 
 	// An unsigned request must not be trusted. Omitting the header is the whole attack.
 	if code := syncRequest(t, handler, "", body); code != http.StatusUnauthorized {
@@ -284,7 +284,7 @@ func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
 	defer cleanup()
 	srv.cfg.SyncSecret = ""
 
-	const body = `{"action":"user.create","user":{"id":"sso-2","username":"nobody","role":"admin"}}`
+	const body = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-2","userName":"nobody","roles":[{"value":"admin","primary":true}],"active":true}`
 	if code := syncRequest(t, handler, "", body); code != http.StatusUnauthorized {
 		t.Errorf("sync event with no configured secret: got %d, want 401", code)
 	}
@@ -293,23 +293,45 @@ func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
 	}
 }
 
-// The header type is inside the signature; the body's action must agree with it, or a
-// captured user.update could be replayed carrying a user.delete body.
-func TestDirectorySyncRefusesTypeMismatchStaleAndReplay(t *testing.T) {
+func TestDirectorySyncBindsLegacyAccountForLaterDeletion(t *testing.T) {
+	srv, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+	legacy := &store.Account{ID: "local-legacy", Username: "legacy", Email: "old@example.test", PasswordHash: "unused", AuthSalt: "salt", KDFIterations: 600000, Role: "user", Status: "active"}
+	if err := srv.store.CreateAccount(legacy); err != nil {
+		t.Fatal(err)
+	}
+	const created = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-legacy","userName":"legacy","emails":[{"value":"new@example.test","primary":true}],"roles":[{"value":"user","primary":true}],"active":true}`
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.created", "evt-bind", created, time.Now()); code != http.StatusOK {
+		t.Fatalf("create delivery = %d, want 200", code)
+	}
+	bound, err := srv.store.GetAccountBySSOSubject("sso-legacy")
+	if err != nil || bound == nil || bound.ID != legacy.ID {
+		t.Fatalf("legacy account was not bound: %+v, %v", bound, err)
+	}
+	const deleted = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-legacy","userName":"legacy","active":false}`
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.deleted", "evt-delete", deleted, time.Now()); code != http.StatusOK {
+		t.Fatalf("delete delivery = %d, want 200", code)
+	}
+	if account, _ := srv.store.GetAccountByUsernameOrEmail("legacy"); account != nil {
+		t.Fatal("legacy local-password account survived signed KySignOn deletion")
+	}
+}
+
+func TestDirectorySyncRefusesUnsupportedTypeStaleAndReplay(t *testing.T) {
 	_, handler, cleanup := setupTestServer(t)
 	defer cleanup()
-	const body = `{"action":"user.delete","user":{"id":"sso-3","username":"gone"}}`
+	const body = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-3","userName":"gone","active":false}`
 
-	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.update", "evt-mismatch", body, time.Now()); code != http.StatusUnauthorized {
-		t.Errorf("type mismatch: got %d, want 401", code)
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.promoted", "evt-unsupported", body, time.Now()); code != http.StatusBadRequest {
+		t.Errorf("unsupported signed type: got %d, want 400", code)
 	}
-	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-stale", body, time.Now().Add(-10*time.Minute)); code != http.StatusUnauthorized {
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.deleted", "evt-stale", body, time.Now().Add(-10*time.Minute)); code != http.StatusUnauthorized {
 		t.Errorf("stale timestamp: got %d, want 401", code)
 	}
-	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-once", body, time.Now()); code != http.StatusOK {
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.deleted", "evt-once", body, time.Now()); code != http.StatusOK {
 		t.Fatalf("first delivery: got %d, want 200", code)
 	}
-	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-once", body, time.Now()); code != http.StatusUnauthorized {
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.deleted", "evt-once", body, time.Now()); code != http.StatusUnauthorized {
 		t.Errorf("replayed event id: got %d, want 401", code)
 	}
 }

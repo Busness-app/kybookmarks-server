@@ -7,7 +7,7 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 1. **Zero-Knowledge End-to-End Encryption**: Bookmarks, notes, titles, and custom folder names are encrypted on trusted clients using Web Crypto (AES-256-GCM / PBKDF2). The server stores only opaque encrypted payloads, UUIDs, versions, parent relationships (max 5 depth), and 90-day tombstones. Login and paper-recovery secrets are derived in the browser with PBKDF2 and stored server-side as Argon2id (`ky-primitives/password`); the paper key itself never reaches the server.
 2. **Deterministic Versioning & CAS Synchronization**: First-write-wins compare-and-swap concurrency. Failed concurrent writes are preserved for 90-day reconciliation rather than silently dropped.
 3. **Netscape Bookmark HTML Import & Export**: Standard browser bookmark file parsing and export supporting top-level merging and folder trees up to 5 levels.
-4. **KySignOn SSO & Account Replication**: Native OIDC PKCE single sign-on with automatic redirect URI resolution; ID tokens are verified by `ky-primitives/oidcverify` against the issuer's JWKS with a per-login nonce (the issuer must be HTTPS). The directory-sync webhook (`/api/sync/events`) is verified by `ky-primitives/syncauth`: signature, timestamp window, event-id replay guard, and the signed header type must equal the body's `action`.
+4. **KySignOn SSO & Account Replication**: Native OIDC PKCE single sign-on with automatic redirect URI resolution; ID tokens are verified by `ky-primitives/oidcverify` against the issuer's JWKS with a per-login nonce (the issuer must be HTTPS). The directory-sync webhook (`/api/sync/events`) is verified by `ky-primitives/syncauth`: signature, timestamp window, event-id replay guard, and a signed `user.created`, `user.updated`, or `user.deleted` type over the bare SCIM user body KySignOn emits.
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
 6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
@@ -126,6 +126,13 @@ generated in the browser because it wraps the vault key, so `ky-primitives/recov
 (server-side generation) does not apply here. The browser posts
 `recoveryVerifier = PBKDF2(paperKey)` at enrolment and the same value as `recoverySecret`
 at recovery; the server stores and checks it exactly like a password.
+
+## OIDC transaction binding
+
+The HttpOnly OIDC transaction cookie is HMAC-authenticated under the persistent server key.
+State, PKCE verifier, optional account-link target, and nonce are one indivisible transaction;
+the callback refuses the cookie before token exchange if any field was altered. Account linking
+must never trust a caller-supplied user ID without that binding.
 
 ## Verification & Build Commands
 

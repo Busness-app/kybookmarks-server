@@ -216,6 +216,11 @@ func (s *Server) handleAdminAuditVerify(w http.ResponseWriter, r *http.Request) 
 }
 
 // Directory Sync Webhook from KySignOn
+type scimValue struct {
+	Value   string `json:"value"`
+	Primary bool   `json:"primary"`
+}
+
 func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -224,82 +229,116 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 	}
 
 	// The signature was verified by syncAuth before this ran; body is the bytes it signed.
-	var event struct {
-		Action string `json:"action"` // "user.create", "user.update", "user.delete"
-		User   struct {
-			ID          string `json:"id"`
-			Username    string `json:"username"`
-			Email       string `json:"email"`
-			DisplayName string `json:"displayName"`
-			Role        string `json:"role"`
-			Status      string `json:"status"`
-		} `json:"user"`
+	var user struct {
+		ID          string      `json:"id"`
+		Username    string      `json:"userName"`
+		DisplayName string      `json:"displayName"`
+		Emails      []scimValue `json:"emails"`
+		Roles       []scimValue `json:"roles"`
+		Active      bool        `json:"active"`
 	}
 
-	if err := json.Unmarshal(body, &event); err != nil {
+	if err := json.Unmarshal(body, &user); err != nil {
 		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 		return
 	}
 
-	// The event type is bound into the signature; the body must say the same thing, or a
-	// captured user.update could be replayed carrying a user.delete body.
 	ev, _ := syncauth.EventFromContext(r)
-	if ev.Type != event.Action {
-		s.auditEvent(r, "sync.rejected", "", "", "signed type "+recoveryclient.AuditSafe(ev.Type)+" does not match body action "+recoveryclient.AuditSafe(event.Action))
-		http.Error(w, `{"error":"invalid_signature"}`, http.StatusUnauthorized)
+	if user.ID == "" || (ev.Type != "user.deleted" && user.Username == "") {
+		s.auditEvent(r, "sync.rejected", "", "", "invalid "+recoveryclient.AuditSafe(ev.Type)+" SCIM user")
+		http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 		return
 	}
+	email := primarySCIMValue(user.Emails)
+	role := primarySCIMValue(user.Roles)
 
-	switch event.Action {
-	case "user.create", "user.provision":
-		existing, _ := s.store.GetAccountByUsernameOrEmail(event.User.Username)
-		if existing == nil {
+	switch ev.Type {
+	case "user.created":
+		existing, _ := s.store.GetAccountByUsernameOrEmail(user.Username)
+		if existing != nil {
+			// KySignOn is the signed source of truth. Upgrades can already have a local
+			// account with this username; bind it now so a later delete cannot be
+			// acknowledged while leaving the legacy password account active.
+			existing.SSOSubject = user.ID
+			existing.Email = email
+			existing.DisplayName = user.DisplayName
+			existing.Role = map[bool]string{true: "admin", false: "user"}[role == "admin"]
+			existing.Status = map[bool]string{true: "active", false: "disabled"}[user.Active]
+			if err := s.store.UpdateAccount(existing); err != nil {
+				http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+				return
+			}
+			s.auditEvent(r, "sync.user_bound", existing.ID, "", "bound existing user to KySignOn: "+existing.Username)
+		} else {
 			salt, _ := crypto.GenerateRandomHex(16)
 			rndPass, _ := crypto.GenerateRandomHex(24)
 			hash, _ := crypto.HashPassword(rndPass)
-			role := "user"
-			if event.User.Role == "admin" {
-				role = "admin"
+			accountRole := "user"
+			if role == "admin" {
+				accountRole = "admin"
 			}
 			newUser := &store.Account{
-				Username:      event.User.Username,
-				Email:         event.User.Email,
-				DisplayName:   event.User.DisplayName,
+				Username:      user.Username,
+				Email:         email,
+				DisplayName:   user.DisplayName,
 				PasswordHash:  hash,
 				AuthSalt:      salt,
 				KDFIterations: 600000,
-				Role:          role,
-				Status:        "active",
-				SSOSubject:    event.User.ID,
+				Role:          accountRole,
+				Status:        map[bool]string{true: "active", false: "disabled"}[user.Active],
+				SSOSubject:    user.ID,
 			}
-			_ = s.store.CreateAccount(newUser)
+			if err := s.store.CreateAccount(newUser); err != nil {
+				http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+				return
+			}
 			s.auditEvent(r, "sync.user_created", newUser.ID, "", "replicated user from KySignOn: "+newUser.Username)
 		}
-	case "user.update":
-		existing, _ := s.store.GetAccountByUsernameOrEmail(event.User.Username)
+	case "user.updated":
+		existing, _ := s.store.GetAccountByUsernameOrEmail(user.Username)
 		if existing != nil {
-			if event.User.DisplayName != "" {
-				existing.DisplayName = event.User.DisplayName
+			if user.DisplayName != "" {
+				existing.DisplayName = user.DisplayName
 			}
-			if event.User.Email != "" {
-				existing.Email = event.User.Email
+			if email != "" {
+				existing.Email = email
 			}
-			if event.User.Role != "" {
-				existing.Role = event.User.Role
+			if role != "" {
+				existing.Role = role
 			}
-			if event.User.Status != "" {
-				existing.Status = event.User.Status
+			existing.Status = map[bool]string{true: "active", false: "disabled"}[user.Active]
+			if err := s.store.UpdateAccount(existing); err != nil {
+				http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+				return
 			}
-			_ = s.store.UpdateAccount(existing)
 			s.auditEvent(r, "sync.user_updated", existing.ID, "", "synced user update from KySignOn: "+existing.Username)
 		}
-	case "user.delete":
-		existing, _ := s.store.GetAccountByUsernameOrEmail(event.User.Username)
+	case "user.deleted":
+		existing, _ := s.store.GetAccountBySSOSubject(user.ID)
 		if existing != nil {
-			_ = s.store.DeleteAccount(existing.ID)
+			if err := s.store.DeleteAccount(existing.ID); err != nil {
+				http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+				return
+			}
 			s.auditEvent(r, "sync.user_deleted", existing.ID, "", "synced user deletion from KySignOn: "+existing.Username)
 		}
+	default:
+		s.auditEvent(r, "sync.rejected", "", "", "unsupported signed event type "+recoveryclient.AuditSafe(ev.Type))
+		http.Error(w, `{"error":"unsupported_event"}`, http.StatusBadRequest)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func primarySCIMValue(values []scimValue) string {
+	for _, value := range values {
+		if value.Primary {
+			return value.Value
+		}
+	}
+	if len(values) > 0 {
+		return values[0].Value
+	}
+	return ""
 }
