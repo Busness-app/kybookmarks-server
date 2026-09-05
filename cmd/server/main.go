@@ -186,7 +186,6 @@ func serve() {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
 
-	// The loop's wait ends at shutdown; a run in flight does not.
 	loopCtx, stopLoop := context.WithCancel(context.Background())
 	defer stopLoop()
 	go backupLoop(loopCtx, dbStore, cfg, auditLogger)

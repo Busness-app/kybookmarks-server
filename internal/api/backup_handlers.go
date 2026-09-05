@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +88,7 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 // handleExportCapsule hands the operator the capsule sealed to the suite recovery key. Only
 // the custodians' shares open it. The export is refused rather than served unrecorded.
 func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(depositBudget))
 	acc, _ := s.currentUser(r)
 	key, err := recoveryclient.LoadRecoveryKey(s.cfg.DataDir, s.settings())
 	switch {
@@ -122,6 +124,7 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.kycap"`, backup.AppName, recoveryclient.FilenameSafe(m.CapsuleID)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	w.Header().Set("X-Recovery-Key-ID", m.RecoveryKeyID)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)

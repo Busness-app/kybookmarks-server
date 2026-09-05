@@ -126,9 +126,7 @@ func recordRun(al *audit.Logger, actor string, res recoveryclient.Result, err er
 }
 
 // backupLoop polls the admin's schedule once a minute; a change in the UI needs no restart.
-// The wait honours shutdown; the run does not, so SIGTERM cannot land between KyRecovery
-// storing a capsule and the receipt being written. Silence is correct only when nothing
-// was ever configured.
+// Silence is correct only when nothing was ever configured.
 func backupLoop(ctx context.Context, st *store.Store, cfg api.Config, al *audit.Logger) {
 	client := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
 	ticker := time.NewTicker(time.Minute)

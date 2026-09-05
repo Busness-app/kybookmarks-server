@@ -192,7 +192,7 @@ session cookie minted before the capsule still validates against the restored se
 
    ```bash
    docker compose down
-   docker compose run --rm --no-deps --user root -v "$PWD:/host" --entrypoint sh kybookmarks-server \
+   docker compose run --rm --no-deps --user root --entrypoint sh kybookmarks-server \
      -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /app/data/kybookmarks.db "DELETE FROM sessions; DELETE FROM pairing_sessions;"'
    docker compose up -d
    ```

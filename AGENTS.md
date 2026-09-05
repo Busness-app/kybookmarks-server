@@ -161,8 +161,7 @@ Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore a
   fresh install all four exist after the first audit entry, which `/api/setup` writes.
 - The decrypt boundary is `cmd/server/backup.go: restore` and nothing else;
   `internal/backup/nodecrypt_test.go` walks the repo with `guardtest`.
-- The backup loop starts unconditionally, polls the schedule setting every minute, and runs on
-  a context that survives SIGTERM.
+- The backup loop starts unconditionally and polls the schedule setting every minute.
 
 ## Verification & Build Commands
 
