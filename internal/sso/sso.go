@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Busness-app/ky-primitives/oidcverify"
 )
 
 // SSOSettings holds the OpenID Connect configuration.
@@ -92,8 +94,16 @@ type DiscoveryDoc struct {
 	JWKSURI               string `json:"jwks_uri"`
 }
 
+// httpClient is the client the issuer is reached with: the caller's, or a bounded default.
+func httpClient(c *http.Client) *http.Client {
+	if c != nil {
+		return c
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
 // DiscoverEndpoints fetches the OpenID configuration from the issuer URL.
-func DiscoverEndpoints(ctx context.Context, issuerURL string) (*DiscoveryDoc, error) {
+func DiscoverEndpoints(ctx context.Context, client *http.Client, issuerURL string) (*DiscoveryDoc, error) {
 	issuerURL = strings.TrimRight(issuerURL, "/")
 	wellKnown := issuerURL + "/.well-known/openid-configuration"
 
@@ -102,8 +112,7 @@ func DiscoverEndpoints(ctx context.Context, issuerURL string) (*DiscoveryDoc, er
 		return nil, fmt.Errorf("failed to create discovery request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient(client).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("discovery request failed: %w", err)
 	}
@@ -142,7 +151,7 @@ type TokenResponse struct {
 }
 
 // ExchangeCode exchanges an authorization code for tokens.
-func ExchangeCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, code, redirectURI, codeVerifier string) (*TokenResponse, error) {
+func ExchangeCode(ctx context.Context, client *http.Client, tokenEndpoint, clientID, clientSecret, code, redirectURI, codeVerifier string) (*TokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -160,8 +169,7 @@ func ExchangeCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, co
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient(client).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -190,52 +198,54 @@ type Claims struct {
 	Role          string `json:"role"`
 }
 
-// ParseClaims parses claims from an ID token (unverified JWS payload) or userinfo endpoint.
-func ParseClaims(ctx context.Context, idToken, accessToken, userinfoEndpoint string) (*Claims, error) {
-	var claims Claims
+// NewVerifier builds a JWKS-backed verifier for one issuer and this client. Callers keep it
+// alive across logins so the JWKS cache and its refresh rate limit do their job. A nil
+// client means the lib's default.
+func NewVerifier(issuer, clientID string, client *http.Client) *oidcverify.Verifier {
+	return &oidcverify.Verifier{Issuer: issuer, Audience: clientID, HTTPClient: client}
+}
 
-	if idToken != "" {
-		parts := strings.Split(idToken, ".")
-		if len(parts) >= 2 {
-			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-			if err == nil {
-				_ = json.Unmarshal(payload, &claims)
-			}
-		}
+// VerifiedClaims checks the ID token's signature, issuer, audience, lifetime and nonce, then
+// reads the profile claims from it. Userinfo may fill a missing email or name and must
+// report the same subject; it is never the source of identity.
+func VerifiedClaims(ctx context.Context, v *oidcverify.Verifier, idToken, nonce, accessToken, userinfoEndpoint string) (*Claims, error) {
+	if idToken == "" {
+		return nil, errors.New("identity provider returned no ID token")
+	}
+	vc, err := v.VerifyWithNonce(ctx, idToken, nonce)
+	if err != nil {
+		return nil, err
+	}
+	claims := &Claims{
+		Subject:  vc.Subject,
+		Email:    vc.String("email"),
+		Name:     vc.String("name"),
+		Username: vc.String("preferred_username"),
+		Role:     vc.String("role"),
+	}
+	if raw, ok := vc.Raw["email_verified"]; ok {
+		_ = json.Unmarshal(raw, &claims.EmailVerified)
 	}
 
-	// If missing critical claims and userinfo endpoint is available, query userinfo
-	if (claims.Subject == "" || claims.Email == "") && userinfoEndpoint != "" && accessToken != "" {
+	if (claims.Email == "" || claims.Name == "") && userinfoEndpoint != "" && accessToken != "" {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, userinfoEndpoint, nil)
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+accessToken)
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Do(req)
+			resp, err := httpClient(v.HTTPClient).Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
 				defer resp.Body.Close()
-				var uClaims Claims
-				if err := json.NewDecoder(resp.Body).Decode(&uClaims); err == nil {
-					if claims.Subject == "" {
-						claims.Subject = uClaims.Subject
-					}
+				var u Claims
+				if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&u) == nil && u.Subject == claims.Subject {
 					if claims.Email == "" {
-						claims.Email = uClaims.Email
 						// Verification travels with the address it describes.
-						claims.EmailVerified = uClaims.EmailVerified
+						claims.Email, claims.EmailVerified = u.Email, u.EmailVerified
 					}
 					if claims.Name == "" {
-						claims.Name = uClaims.Name
-					}
-					if claims.Username == "" {
-						claims.Username = uClaims.Username
+						claims.Name = u.Name
 					}
 				}
 			}
 		}
-	}
-
-	if claims.Subject == "" {
-		return nil, errors.New("no subject claim found in ID token or userinfo")
 	}
 
 	if claims.Username == "" {
@@ -246,7 +256,7 @@ func ParseClaims(ctx context.Context, idToken, accessToken, userinfoEndpoint str
 		}
 	}
 
-	return &claims, nil
+	return claims, nil
 }
 
 // StateCookie generates an encrypted or hex-encoded state parameter.

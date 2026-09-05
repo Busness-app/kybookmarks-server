@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoveryclient"
+
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
 	"github.com/Busness-app/kybookmarks-server/internal/store"
@@ -467,7 +469,12 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(stateBytes)
 	state := hex.EncodeToString(stateBytes)
 
-	cookieVal := fmt.Sprintf("%s|%s|%s", state, verifier, linkUserID)
+	// The nonce binds the ID token to this login; the callback verifies it.
+	nonceBytes := make([]byte, 16)
+	_, _ = rand.Read(nonceBytes)
+	nonce := hex.EncodeToString(nonceBytes)
+
+	cookieVal := fmt.Sprintf("%s|%s|%s|%s", state, verifier, linkUserID, nonce)
 	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoCookieName,
@@ -479,7 +486,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   300,
 	})
 
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	disc, err := sso.DiscoverEndpoints(r.Context(), s.ssoHTTP, settings.IssuerURL)
 	if err != nil {
 		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
 		return
@@ -505,6 +512,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	q.Set("redirect_uri", redirectURI)
 	q.Set("scope", "openid profile email")
 	q.Set("state", state)
+	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	authURL.RawQuery = q.Encode()
@@ -533,17 +541,13 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(cookie.Value, "|")
-	if len(parts) < 2 || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
+	if len(parts) != 4 || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
 		http.Error(w, "invalid SSO state parameter", http.StatusBadRequest)
 		return
 	}
-	codeVerifier := parts[1]
-	linkUserID := ""
-	if len(parts) >= 3 {
-		linkUserID = parts[2]
-	}
+	codeVerifier, linkUserID, nonce := parts[1], parts[2], parts[3]
 
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	disc, err := sso.DiscoverEndpoints(r.Context(), s.ssoHTTP, settings.IssuerURL)
 	if err != nil {
 		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
 		return
@@ -558,15 +562,16 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, requestHost(r))
 	}
 
-	tok, err := sso.ExchangeCode(r.Context(), disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
+	tok, err := sso.ExchangeCode(r.Context(), s.ssoHTTP, disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
 	if err != nil {
 		http.Error(w, "failed to exchange token: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	claims, err := sso.ParseClaims(r.Context(), tok.IDToken, tok.AccessToken, disc.UserinfoEndpoint)
+	claims, err := sso.VerifiedClaims(r.Context(), s.verifierFor(settings), tok.IDToken, nonce, tok.AccessToken, disc.UserinfoEndpoint)
 	if err != nil {
-		http.Error(w, "failed to parse claims: "+err.Error(), http.StatusBadGateway)
+		s.auditEvent(r, "sso.token_rejected", "", "", recoveryclient.AuditSafe(err.Error()))
+		http.Error(w, "identity token failed verification", http.StatusBadGateway)
 		return
 	}
 	// The subject is the only stable identifier we bind accounts to.

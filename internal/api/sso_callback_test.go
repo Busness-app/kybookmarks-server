@@ -1,22 +1,24 @@
 package api
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
+	"github.com/Busness-app/kybookmarks-server/internal/sso/ssotest"
 )
 
-// stubIdP serves just enough OIDC for the callback: discovery, plus a token
-// endpoint returning an ID token carrying the claims the test wants to assert on.
+// stubIdP serves just enough OIDC for the callback: discovery, a JWKS, and a token
+// endpoint returning an RS256 ID token carrying the claims the test wants to assert on,
+// with the standard claims the verifier demands filled in.
 func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 	t.Helper()
+	key := ssotest.Key(t)
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
@@ -24,18 +26,19 @@ func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 			"issuer":                 srv.URL,
 			"authorization_endpoint": srv.URL + "/authorize",
 			"token_endpoint":         srv.URL + "/token",
+			"jwks_uri":               srv.URL + "/.well-known/jwks.json",
 		})
 	})
+	mux.HandleFunc("/.well-known/jwks.json", ssotest.JWKS(key))
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		payload, _ := json.Marshal(claims)
-		idToken := fmt.Sprintf("%s.%s.%s",
-			base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)),
-			base64.RawURLEncoding.EncodeToString(payload),
-			base64.RawURLEncoding.EncodeToString([]byte("signature")),
-		)
+		now := time.Now().Unix()
+		full := map[string]any{"iss": srv.URL, "aud": "kybookmarks", "nonce": "testnonce", "iat": now, "exp": now + 300}
+		for k, v := range claims {
+			full[k] = v
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "at",
-			"id_token":     idToken,
+			"id_token":     ssotest.Mint(t, key, full),
 			"token_type":   "Bearer",
 		})
 	})
@@ -45,6 +48,7 @@ func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 // ssoCallback drives the callback with a state cookie the server would have set.
 func ssoCallback(t *testing.T, srv *Server, handler http.Handler, idp *httptest.Server, claims map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	srv.ssoHTTP = idp.Client()
 	if err := srv.ssoStore.Save(sso.SSOSettings{
 		Enabled:       true,
 		IssuerURL:     idp.URL,
@@ -55,7 +59,7 @@ func ssoCallback(t *testing.T, srv *Server, handler http.Handler, idp *httptest.
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/callback?code=authcode&state=teststate", nil)
-	req.AddCookie(&http.Cookie{Name: ssoCookieName, Value: "teststate|verifier|"})
+	req.AddCookie(&http.Cookie{Name: ssoCookieName, Value: "teststate|verifier||testnonce"})
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w

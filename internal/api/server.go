@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/oidcverify"
 	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
@@ -56,6 +57,17 @@ type Server struct {
 
 	// syncReplay remembers accepted directory-sync event IDs inside the timestamp window.
 	syncReplay syncauth.Replay
+
+	// ssoHTTP reaches the identity provider; nil means a bounded default. Tests point it
+	// at a TLS stub.
+	ssoHTTP *http.Client
+
+	// One ID-token verifier per (issuer, client id), so the JWKS cache and its refresh
+	// rate limit survive across logins.
+	oidcMu     sync.Mutex
+	oidcIssuer string
+	oidcClient string
+	oidc       *oidcverify.Verifier
 
 	// auditFailures counts audit writes that did not land. /api/health reports only
 	// whether it is non-zero; the count itself stays out of an unauthenticated body.
@@ -138,6 +150,18 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		saltKey:       saltKey,
 		syncReplay:    syncauth.NewMemoryReplay(0, 0),
 	}, nil
+}
+
+// verifierFor returns the cached verifier for the current SSO settings, rebuilding it when
+// an admin changes the issuer or client id.
+func (s *Server) verifierFor(settings sso.SSOSettings) *oidcverify.Verifier {
+	s.oidcMu.Lock()
+	defer s.oidcMu.Unlock()
+	if s.oidc == nil || s.oidcIssuer != settings.IssuerURL || s.oidcClient != settings.ClientID {
+		s.oidc = sso.NewVerifier(settings.IssuerURL, settings.ClientID, s.ssoHTTP)
+		s.oidcIssuer, s.oidcClient = settings.IssuerURL, settings.ClientID
+	}
+	return s.oidc
 }
 
 // syncAuth verifies the KySignOn signature before the handler decodes anything. An empty
