@@ -31,7 +31,7 @@ RUN addgroup -S kybookmark && adduser -S kybookmark -G kybookmark
 COPY --from=backend-builder /kybookmarks-server /usr/local/bin/kybookmarks-server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-RUN mkdir -p /app/data /app/config && chown -R kybookmark:kybookmark /app/data /app/config
+RUN mkdir -p /app/data /app/config /app/backups && chown -R kybookmark:kybookmark /app/data /app/config /app/backups
 
 USER kybookmark
 

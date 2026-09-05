@@ -297,6 +297,32 @@ func TestExportCapsuleIsASealedContainer(t *testing.T) {
 	}
 }
 
+// An export that cannot be recorded on the audit chain is refused, not served.
+func TestExportCapsuleIsRefusedWhenAuditFails(t *testing.T) {
+	srv, handler, sess, csrf, cleanup := backupFixture(t)
+	defer cleanup()
+	if w := pinKey(t, handler, sess, csrf, freshPin(t), 2, 3); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	// The collector must still read the log, so it cannot become a directory here; a
+	// read-only log fails the append and nothing else. Root ignores file modes.
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	logPath := filepath.Join(srv.cfg.DataDir, "audit", "audit.log")
+	if err := os.Chmod(logPath, 0400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(logPath, 0600) })
+	w := do(t, handler, http.MethodGet, "/api/admin/backup/export-capsule", nil, sess, nil)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "audit_failed") {
+		t.Fatalf("export with a dead audit chain: %d %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Content-Type") == "application/octet-stream" {
+		t.Fatal("capsule bytes were served despite the refused audit record")
+	}
+}
+
 func TestBackupRoutesRequireAdmin(t *testing.T) {
 	srv, handler, _, _, cleanup := backupFixture(t)
 	defer cleanup()

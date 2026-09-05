@@ -31,10 +31,21 @@ services:
       # authenticating it with a value published in this repository. At least 16
       # bytes; KySignOn mints 32. It is the HMAC key and never travels in a header.
       SYNC_SECRET: ${SYNC_SECRET:-}
+      # Sealed backups. Empty = no local copies; pair with KyRecovery or set this to
+      # /app/backups (the volume below) so an instance with no KyRecovery still has backups.
+      KYBOOKMARKS_BACKUP_DIR: ${KYBOOKMARKS_BACKUP_DIR:-}
+      KYBOOKMARKS_BACKUP_KEEP: ${KYBOOKMARKS_BACKUP_KEEP:-7}
+      # Default schedule only; the admin sets the live one in the Backup tab.
+      KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL: ${KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL:-24h}
+      # Off: a KyRecovery on a private or CGNAT address is refused. HTTPS is always required.
+      KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      # KYBOOKMARKS_DNS lives only in docker-compose.lan-dns.yml.
 
     volumes:
       - kybookmarks_data:/app/data
       - kybookmarks_config:/app/config
+      # Used only when KYBOOKMARKS_BACKUP_DIR=/app/backups.
+      - kybookmarks_backups:/app/backups
 
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5869/api/health || exit 1"]
@@ -46,6 +57,7 @@ services:
 volumes:
   kybookmarks_data:
   kybookmarks_config:
+  kybookmarks_backups:
 
 networks:
   kypost-net:

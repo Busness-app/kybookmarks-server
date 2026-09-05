@@ -16,10 +16,19 @@ AUTH = "internal/api/auth_handlers.go"
 DEVICEH = "internal/api/device_handlers.go"
 DEVICES = "internal/devices/devices.go"
 STORE = "internal/store/store.go"
+BACKUPH = "internal/api/backup_handlers.go"
 
 BACKUP = ".ablate.bak"
 
 ABLATIONS = [
+ ("capsule export served without an audit record", BACKUPH, "TestExportCapsuleIsRefusedWhenAuditFails",
+  '\tif !s.auditCritical(r, "admin.backup_exported", acc.ID, "success", map[string]any{',
+  '\tif false && !s.auditCritical(r, "admin.backup_exported", acc.ID, "success", map[string]any{'),
+
+ ("unpair also drops the key pin", BACKUPH, "TestUnpairKeepsPin",
+  "\tif err := recoveryclient.ClearPairing(s.settings()); err != nil {",
+  "\t_ = s.store.DeleteSetting(\"kyrecovery_key_id\")\n\tif err := recoveryclient.ClearPairing(s.settings()); err != nil {"),
+
  ("constant key fallback", AUDIT, "TestKeyIsNotAConstant|TestForgery",
   "\treturn keyfile.LoadOrCreate(filepath.Join(configDir, keyFile), keyLen)",
   "\treturn []byte(legacyDefaultSecret + legacyDefaultSecret)[:keyLen], nil"),
