@@ -34,11 +34,24 @@ const (
 	ssoCookieName     = "kybookmark_sso_state"
 )
 
+// BackupConfig is the env-derived side of the backup contract. The live schedule is an
+// admin setting; DepositInterval is only its default.
+type BackupConfig struct {
+	Dir                  string
+	Keep                 int
+	DepositInterval      time.Duration
+	AllowPrivateRecovery bool
+}
+
 type Config struct {
 	WebDir     string
 	DataDir    string
 	ConfigDir  string
 	SyncSecret string
+	Backup     BackupConfig
+	// DeploymentKey seals the KyRecovery token at rest (CONFIG_DIR/deployment.key).
+	DeploymentKey []byte
+	AppVersion    string
 }
 
 type Server struct {
