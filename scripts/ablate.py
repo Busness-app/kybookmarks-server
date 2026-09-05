@@ -21,8 +21,8 @@ BACKUP = ".ablate.bak"
 
 ABLATIONS = [
  ("constant key fallback", AUDIT, "TestKeyIsNotAConstant|TestForgery",
-  "\tkey := make([]byte, keyLen)\n\tif _, err := rand.Read(key); err != nil {",
-  "\tkey := []byte(legacyDefaultSecret + legacyDefaultSecret)\n\tif _, err := rand.Read(make([]byte, 1)); err != nil {"),
+  "\treturn keyfile.LoadOrCreate(filepath.Join(configDir, keyFile), keyLen)",
+  "\treturn []byte(legacyDefaultSecret + legacyDefaultSecret)[:keyLen], nil"),
 
  ("anchor taken from the log instead of the mark", AUDIT, "TestTruncation|TestMissingState",
   "\tif err := auditchain.Verify(l.key, records, l.anchor); err != nil {",

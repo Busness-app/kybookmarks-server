@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Busness-app/ky-primitives/keyfile"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
@@ -105,27 +106,8 @@ func loadOrCreateSaltKey(configDir string) ([]byte, error) {
 	if configDir == "" {
 		return nil, errors.New("decoy salt key: no config directory to persist it in")
 	}
-	path := filepath.Join(configDir, "enum.key")
-	raw, err := os.ReadFile(path)
-	if err == nil {
-		key, decErr := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if decErr != nil || len(key) < 32 {
-			return nil, fmt.Errorf("decoy salt key %s is corrupt; remove it to generate a new one", path)
-		}
-		return key, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("decoy salt key: %w", err)
-	}
-
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("decoy salt key: no entropy: %w", err)
-	}
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return nil, fmt.Errorf("decoy salt key: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+	key, err := keyfile.LoadOrCreate(filepath.Join(configDir, "enum.key"), 32)
+	if err != nil {
 		return nil, fmt.Errorf("decoy salt key: %w", err)
 	}
 	return key, nil

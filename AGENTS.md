@@ -21,12 +21,14 @@ proves nothing.
 | Variable | Meaning |
 |---|---|
 | `CONFIG_DIR` | Holds `audit.key` and `audit.state`. Defaults to `./config`. |
-| `AUDIT_KEY` | Optional. Hex, >= 32 bytes (`openssl rand -hex 32`). Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
+| `AUDIT_KEY` | Optional. Exactly 32 bytes as hex (`openssl rand -hex 32`) or base64. A value that is set but malformed refuses to start. Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
 | `HMAC_SECRET` | **Legacy verification only.** Entries written before the chain was keyed are chained with this; it is never used to write. Leave it set to whatever the deployment used previously, or unset to fall back to the published constant those entries actually used. |
 | `SYNC_SECRET` | Signs the `/api/sync/events` directory webhook. **No default**: unset makes the endpoint reject every request. |
 
 Rules for anyone touching this package:
 
+- **Both on-disk keys (`audit.key`, `enum.key`) are read and minted through
+  `ky-primitives/keyfile`.** Do not add a third reader.
 - **No constant may ever key a written entry.** `legacyDefaultSecret` exists solely to
   verify `v: 0` records and must stay out of the write path.
 - **Entries are versioned.** `v: 0` is the legacy public-key format; `v: 1` is keyed and

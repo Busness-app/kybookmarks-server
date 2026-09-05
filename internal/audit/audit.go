@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,11 +11,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/auditchain"
+	"github.com/Busness-app/ky-primitives/keyfile"
 
 	"github.com/google/uuid"
 )
@@ -162,62 +161,12 @@ func NewLogger(dataDir, configDir, legacySecret string) (*Logger, error) {
 // loadOrCreateKey sources the chain key from AUDIT_KEY, else configDir/audit.key,
 // else 32 fresh random bytes persisted 0600. There is deliberately no constant fallback.
 func loadOrCreateKey(configDir string) ([]byte, error) {
-	path := filepath.Join(configDir, keyFile)
-
-	if env := strings.TrimSpace(os.Getenv(keyEnv)); env != "" {
-		key, err := decodeKey(env)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", keyEnv, err)
-		}
+	if key, ok, err := keyfile.FromEnv(keyEnv, keyLen); err != nil {
+		return nil, err
+	} else if ok {
 		return key, nil
 	}
-
-	switch data, err := os.ReadFile(path); {
-	case err == nil:
-		key, err := decodeKey(strings.TrimSpace(string(data)))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		return key, nil
-	case !errors.Is(err, os.ErrNotExist):
-		return nil, fmt.Errorf("failed to read audit key: %w", err)
-	}
-
-	key := make([]byte, keyLen)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("failed to generate audit key: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if errors.Is(err, os.ErrExist) {
-		// Another process got there first. Its key is authoritative.
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read audit key: %w", err)
-		}
-		return decodeKey(strings.TrimSpace(string(data)))
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to persist audit key: %w", err)
-	}
-	if _, err := f.WriteString(hex.EncodeToString(key)); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("failed to persist audit key: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return nil, fmt.Errorf("failed to persist audit key: %w", err)
-	}
-	return key, nil
-}
-
-func decodeKey(s string) ([]byte, error) {
-	key, err := hex.DecodeString(s)
-	if err != nil {
-		return nil, fmt.Errorf("must be hex encoded (openssl rand -hex %d)", keyLen)
-	}
-	if len(key) < keyLen {
-		return nil, fmt.Errorf("must be at least %d bytes, got %d", keyLen, len(key))
-	}
-	return key, nil
+	return keyfile.LoadOrCreate(filepath.Join(configDir, keyFile), keyLen)
 }
 
 // recover restores the chain tail and, on a genuine first keying, anchors the legacy
