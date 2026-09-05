@@ -126,9 +126,9 @@ ABLATIONS = [
   "\tif errors.Is(err, audit.ErrMarkNotAdvanced) {",
   "\tif errors.Is(err, audit.ErrMarkNotAdvanced) && false {"),
 
- ("sync signature optional again", ADMIN, "TestDirectorySync",
-  '\tif s.cfg.SyncSecret == "" {\n\t\thttp.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)\n\t\treturn\n\t}\n\tmac := hmac.New',
-  '\tif s.cfg.SyncSecret == "" || r.Header.Get("X-KySignOn-Signature") == "" {\n\t\twriteJSON(w, http.StatusOK, map[string]bool{"ok": true})\n\t\treturn\n\t}\n\tmac := hmac.New'),
+ ("sync signature optional again", SERVER, "TestDirectorySync",
+  '\tmux.Handle("POST /api/sync/events", s.syncAuth()(http.HandlerFunc(s.handleDirectorySyncEvent)))',
+  '\tmux.HandleFunc("POST /api/sync/events", s.handleDirectorySyncEvent)'),
 
  ("pair/request public again", SERVER, "TestPairRequestRequiresAuth|TestPairingCannotEscalate",
   '\tmux.HandleFunc("POST /api/devices/pair/request", s.withAuth(s.handlePairRequest))',

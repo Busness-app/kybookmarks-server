@@ -3,9 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -14,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
 	"github.com/Busness-app/kybookmarks-server/internal/devices"
@@ -227,15 +227,22 @@ func TestE2EAPIWorkflows(t *testing.T) {
 	}
 }
 
-// syncRequest posts a directory-sync event, optionally signing it.
+// syncRequest posts a directory-sync event, optionally signing it as KySignOn does.
 func syncRequest(t *testing.T, handler http.Handler, secret, body string) int {
+	t.Helper()
+	return syncRequestTyped(t, handler, secret, "user.create", "evt-"+body[:8], body, time.Now())
+}
+
+func syncRequestTyped(t *testing.T, handler http.Handler, secret, eventType, eventID, body string, at time.Time) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/sync/events", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	if secret != "" {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write([]byte(body))
-		req.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
+		h, err := syncauth.Sign([]byte(secret), at, eventType, eventID, []byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Apply(req)
 	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -256,7 +263,7 @@ func TestDirectorySyncRequiresSignature(t *testing.T) {
 		t.Fatal("unsigned sync event created an admin account")
 	}
 
-	if code := syncRequest(t, handler, "wrong-secret", body); code != http.StatusUnauthorized {
+	if code := syncRequest(t, handler, "wrong-secret-wrong-secret", body); code != http.StatusUnauthorized {
 		t.Errorf("badly signed sync event: got %d, want 401", code)
 	}
 	if acc, _ := srv.store.GetAccountByUsernameOrEmail("mallory"); acc != nil {
@@ -283,6 +290,27 @@ func TestDirectorySyncFailsClosedWithoutSecret(t *testing.T) {
 	}
 	if acc, _ := srv.store.GetAccountByUsernameOrEmail("nobody"); acc != nil {
 		t.Fatal("sync event was applied with no secret configured")
+	}
+}
+
+// The header type is inside the signature; the body's action must agree with it, or a
+// captured user.update could be replayed carrying a user.delete body.
+func TestDirectorySyncRefusesTypeMismatchStaleAndReplay(t *testing.T) {
+	_, handler, cleanup := setupTestServer(t)
+	defer cleanup()
+	const body = `{"action":"user.delete","user":{"id":"sso-3","username":"gone"}}`
+
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.update", "evt-mismatch", body, time.Now()); code != http.StatusUnauthorized {
+		t.Errorf("type mismatch: got %d, want 401", code)
+	}
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-stale", body, time.Now().Add(-10*time.Minute)); code != http.StatusUnauthorized {
+		t.Errorf("stale timestamp: got %d, want 401", code)
+	}
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-once", body, time.Now()); code != http.StatusOK {
+		t.Fatalf("first delivery: got %d, want 200", code)
+	}
+	if code := syncRequestTyped(t, handler, "test-sync-secret", "user.delete", "evt-once", body, time.Now()); code != http.StatusUnauthorized {
+		t.Errorf("replayed event id: got %d, want 401", code)
 	}
 }
 

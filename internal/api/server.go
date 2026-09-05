@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/audit"
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
@@ -52,6 +53,9 @@ type Server struct {
 
 	// saltKey derives the decoy login salt served for unknown usernames.
 	saltKey []byte
+
+	// syncReplay remembers accepted directory-sync event IDs inside the timestamp window.
+	syncReplay syncauth.Replay
 
 	// auditFailures counts audit writes that did not land. /api/health reports only
 	// whether it is non-zero; the count itself stays out of an unauthenticated body.
@@ -132,7 +136,24 @@ func NewServer(s *store.Store, vm *vault.Manager, ds *devices.Store, ss *sso.Sto
 		cfg:           cfg,
 		loginAttempts: make(map[string]*loginAttemptTracker),
 		saltKey:       saltKey,
+		syncReplay:    syncauth.NewMemoryReplay(0, 0),
 	}, nil
+}
+
+// syncAuth verifies the KySignOn signature before the handler decodes anything. An empty
+// SYNC_SECRET is a 401 from the middleware (keyFn error), which keeps the old fail-closed
+// behaviour without a second check in the handler.
+func (s *Server) syncAuth() func(http.Handler) http.Handler {
+	keyFn := func(*http.Request) ([]byte, error) {
+		if s.cfg.SyncSecret == "" {
+			return nil, errors.New("SYNC_SECRET is not set")
+		}
+		return []byte(s.cfg.SyncSecret), nil
+	}
+	onReject := func(r *http.Request, err error) {
+		log.Printf("sync: rejected event from %s: %v", clientIP(r), err)
+	}
+	return syncauth.Middleware(keyFn, syncauth.Options{Replay: s.syncReplay}, 0, onReject)
 }
 
 func (s *Server) Routes() http.Handler {
@@ -201,7 +222,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/audit/verify", s.withAdmin(s.handleAdminAuditVerify))
 
 	// Suite Sync Webhook (Signed by KySignOn)
-	mux.HandleFunc("POST /api/sync/events", s.handleDirectorySyncEvent)
+	mux.Handle("POST /api/sync/events", s.syncAuth()(http.HandlerFunc(s.handleDirectorySyncEvent)))
 
 	// SPA Static File Serving
 	if s.cfg.WebDir != "" {

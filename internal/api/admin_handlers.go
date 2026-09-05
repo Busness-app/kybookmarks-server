@@ -1,13 +1,13 @@
 package api
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/Busness-app/ky-primitives/recoveryclient"
+	"github.com/Busness-app/ky-primitives/syncauth"
 
 	"github.com/Busness-app/kybookmarks-server/internal/crypto"
 	"github.com/Busness-app/kybookmarks-server/internal/sso"
@@ -223,20 +223,7 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Verify HMAC signature. This endpoint has no other authentication, so an
-	// absent signature or an unconfigured secret must fail closed.
-	if s.cfg.SyncSecret == "" {
-		http.Error(w, `{"error":"sync_not_configured"}`, http.StatusUnauthorized)
-		return
-	}
-	mac := hmac.New(sha256.New, []byte(s.cfg.SyncSecret))
-	mac.Write(body)
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(r.Header.Get("X-KySignOn-Signature")), []byte(expectedSig)) {
-		http.Error(w, `{"error":"invalid_signature"}`, http.StatusUnauthorized)
-		return
-	}
-
+	// The signature was verified by syncAuth before this ran; body is the bytes it signed.
 	var event struct {
 		Action string `json:"action"` // "user.create", "user.update", "user.delete"
 		User   struct {
@@ -251,6 +238,15 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 
 	if err := json.Unmarshal(body, &event); err != nil {
 		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// The event type is bound into the signature; the body must say the same thing, or a
+	// captured user.update could be replayed carrying a user.delete body.
+	ev, _ := syncauth.EventFromContext(r)
+	if ev.Type != event.Action {
+		s.auditEvent(r, "sync.rejected", "", "", "signed type "+recoveryclient.AuditSafe(ev.Type)+" does not match body action "+recoveryclient.AuditSafe(event.Action))
+		http.Error(w, `{"error":"invalid_signature"}`, http.StatusUnauthorized)
 		return
 	}
 
