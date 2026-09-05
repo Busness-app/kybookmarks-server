@@ -305,7 +305,7 @@ func TestDirectorySyncBindsLegacyAccountForLaterDeletion(t *testing.T) {
 		t.Fatalf("create delivery = %d, want 200", code)
 	}
 	bound, err := srv.store.GetAccountBySSOSubject("sso-legacy")
-	if err != nil || bound == nil || bound.ID != legacy.ID {
+	if err != nil || bound == nil || bound.ID != legacy.ID || bound.Email != "new@example.test" {
 		t.Fatalf("legacy account was not bound: %+v, %v", bound, err)
 	}
 	const deleted = `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"sso-legacy","userName":"legacy","active":false}`

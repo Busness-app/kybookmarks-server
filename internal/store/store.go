@@ -411,12 +411,12 @@ func (s *Store) UpdateAccount(a *Account) error {
 	defer s.mu.Unlock()
 
 	a.UpdatedAt = time.Now().UTC()
-	query := `UPDATE accounts SET display_name = ?, role = ?, status = ?, password_hash = ?,
+	query := `UPDATE accounts SET email = ?, display_name = ?, role = ?, status = ?, password_hash = ?,
 		auth_salt = ?, kdf_iterations = ?, sso_subject = ?, password_key_wrap = ?,
 		recovery_key_wrap = ?, recovery_verifier = ?, updated_at = ? WHERE id = ?`
 
 	_, err := s.db.Exec(query,
-		a.DisplayName, a.Role, a.Status, a.PasswordHash, a.AuthSalt, a.KDFIterations,
+		a.Email, a.DisplayName, a.Role, a.Status, a.PasswordHash, a.AuthSalt, a.KDFIterations,
 		nullIfEmpty(a.SSOSubject), a.PasswordKeyWrap, a.RecoveryKeyWrap, a.RecoveryVerifier, a.UpdatedAt, a.ID,
 	)
 	return err

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -254,8 +255,16 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 
 	switch ev.Type {
 	case "user.created":
-		existing, _ := s.store.GetAccountByUsernameOrEmail(user.Username)
+		existing, lookupErr := s.store.GetAccountByUsernameOrEmail(user.Username)
+		if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+			http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+			return
+		}
 		if existing != nil {
+			if existing.SSOSubject != "" && existing.SSOSubject != user.ID {
+				http.Error(w, `{"error":"identity_conflict"}`, http.StatusConflict)
+				return
+			}
 			// KySignOn is the signed source of truth. Upgrades can already have a local
 			// account with this username; bind it now so a later delete cannot be
 			// acknowledged while leaving the legacy password account active.
@@ -295,8 +304,20 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 			s.auditEvent(r, "sync.user_created", newUser.ID, "", "replicated user from KySignOn: "+newUser.Username)
 		}
 	case "user.updated":
-		existing, _ := s.store.GetAccountByUsernameOrEmail(user.Username)
+		existing, lookupErr := s.store.GetAccountBySSOSubject(user.ID)
+		if errors.Is(lookupErr, store.ErrNotFound) {
+			existing, lookupErr = s.store.GetAccountByUsernameOrEmail(user.Username)
+			if existing != nil && existing.SSOSubject != "" && existing.SSOSubject != user.ID {
+				http.Error(w, `{"error":"identity_conflict"}`, http.StatusConflict)
+				return
+			}
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+			http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+			return
+		}
 		if existing != nil {
+			existing.SSOSubject = user.ID
 			if user.DisplayName != "" {
 				existing.DisplayName = user.DisplayName
 			}
@@ -314,7 +335,11 @@ func (s *Server) handleDirectorySyncEvent(w http.ResponseWriter, r *http.Request
 			s.auditEvent(r, "sync.user_updated", existing.ID, "", "synced user update from KySignOn: "+existing.Username)
 		}
 	case "user.deleted":
-		existing, _ := s.store.GetAccountBySSOSubject(user.ID)
+		existing, lookupErr := s.store.GetAccountBySSOSubject(user.ID)
+		if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+			http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
+			return
+		}
 		if existing != nil {
 			if err := s.store.DeleteAccount(existing.ID); err != nil {
 				http.Error(w, `{"error":"sync_failed"}`, http.StatusInternalServerError)
