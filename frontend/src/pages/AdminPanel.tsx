@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { getJSON, postJSON, putJSON, deleteJSON, toErrorMessage } from '../lib/api';
+import { AdminBackup } from './AdminBackup';
 import {
   Users,
   ShieldCheck,
   FileText,
+  HardDriveDownload,
   Plus,
   Trash2,
   Edit2,
@@ -18,7 +20,7 @@ interface AdminPanelProps {
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState<'users' | 'sso' | 'audit'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'sso' | 'audit' | 'backup'>('users');
 
   // Users
   const [users, setUsers] = useState<any[]>([]);
@@ -182,7 +184,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
             <FileText size={16} />
             <span>Audit Trail</span>
           </button>
+          <button
+            className={`nav-item ${activeTab === 'backup' ? 'active' : ''}`}
+            onClick={() => setActiveTab('backup')}
+          >
+            <HardDriveDownload size={16} />
+            <span>Backup &amp; Recovery</span>
+          </button>
         </div>
+
+        {/* Backup Tab */}
+        {activeTab === 'backup' && <AdminBackup />}
 
         {/* Users Tab */}
         {activeTab === 'users' && (

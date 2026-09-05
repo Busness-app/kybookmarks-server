@@ -1,0 +1,174 @@
+/* Backup & Recovery tab. Ported from kysignon's AdminBackup, on this app's variables. */
+
+.dr-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.dr-fact {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.dr-fact-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.dr-fact-value {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.dr-fact-note {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.dr-mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+}
+
+.dr-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.dr-badge-ok {
+  color: var(--accent-green);
+  background: var(--accent-green-dim);
+}
+
+.dr-badge-warn {
+  color: var(--accent-amber);
+  background: var(--accent-amber-dim);
+}
+
+.dr-badge-off {
+  color: var(--text-muted);
+}
+
+.dr-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.dr-hint {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.dr-note {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.dr-muted {
+  color: var(--text-muted);
+}
+
+.dr-danger {
+  font-size: 0.85rem;
+  color: var(--accent-red);
+}
+
+.dr-mt {
+  margin-top: 0.75rem;
+}
+
+.dr-mt-sm {
+  margin-top: 0.4rem;
+}
+
+.dr-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dr-members li {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-primary);
+}
+
+.dr-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1.25rem;
+}
+
+.dr-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.dr-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.dr-check svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.dr-copies {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.dr-copies li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.2rem 0;
+  border-top: 1px dashed var(--border-color);
+}
+
+.dr-spin {
+  animation: dr-spin 1s linear infinite;
+}
+
+@keyframes dr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
