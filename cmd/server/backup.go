@@ -44,15 +44,7 @@ func runBackupDrill() {
 	st, _, cfg := openForBackup()
 	defer st.Close()
 	ctx := context.Background()
-	payload, err := backup.Collect(ctx, st, cfg.DataDir, cfg.ConfigDir, cfg.AppVersion)
-	if err != nil {
-		log.Fatalf("collect: %v", err)
-	}
-	root, err := backup.DrillRoot(cfg.DataDir)
-	if err != nil {
-		log.Fatal(err)
-	}
-	res, err := recoveryclient.Drill(ctx, root, payload, backup.Checks(payload))
+	res, err := backup.RunDrill(ctx, st, cfg.DataDir, cfg.ConfigDir, cfg.AppVersion)
 	if err != nil {
 		log.Fatalf("drill: %v", err)
 	}

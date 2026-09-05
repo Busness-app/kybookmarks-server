@@ -161,6 +161,16 @@ Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore a
   fresh install all four exist after the first audit entry, which `/api/setup` writes.
 - The decrypt boundary is `cmd/server/backup.go: restore` and nothing else;
   `internal/backup/nodecrypt_test.go` walks the repo with `guardtest`.
+- `Checks` receives the authenticated opened capsule manifest. Type-check its JSON recipe;
+  require the product's core members, tables and active admin even if the recipe omits them.
+  Member access stays under `os.OpenRoot`; SQLite verification uses a read-only file URI and
+  never the schema-creating store constructor.
+- HTTP and CLI drills both call `backup.RunDrill`. Hold the per-directory OS advisory lock
+  before collection and the library's stale-scratch sweep; a competing drill gets 409/CLI
+  failure. Keep `DATA_DIR/drill` at 0700 and its `.lock` inode permanent. Closing the file
+  releases the lock after failure or process exit. Unsupported platforms refuse to drill.
+- `testdata/pairing-v050.json` under `internal/backup` is synthetic v0.5.0 output. Upgrade
+  tests must load that ciphertext and pin, not regenerate them using the version under test.
 - The backup loop starts unconditionally and polls the schedule setting every minute.
 
 ## Verification & Build Commands

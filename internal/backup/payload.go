@@ -93,6 +93,6 @@ func Collect(ctx context.Context, st *store.Store, dataDir, configDir, appVersio
 		AppVersion:         appVersion,
 		Files:              files,
 		Dependencies:       map[string]any{"sqlite": "modernc.org/sqlite", "go": "1.26"},
-		VerificationRecipe: map[string]any{"required_tables": []string{"accounts", "vault_objects", "settings"}, "require_any_admin": true},
+		VerificationRecipe: map[string]any{"required_tables": requiredTables, "require_any_admin": true},
 	}, nil
 }

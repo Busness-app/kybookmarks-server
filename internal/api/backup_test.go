@@ -3,15 +3,19 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/Busness-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -361,5 +365,126 @@ func TestBackupRoutesRequireAdmin(t *testing.T) {
 		if w := do(t, handler, rt.method, rt.path, nil, usess, ucsrf); w.Code != http.StatusForbidden {
 			t.Errorf("%s %s as user: %d, want 403", rt.method, rt.path, w.Code)
 		}
+	}
+}
+
+// The old on-disk pairing must still drive the actual handler after the library upgrade.
+func TestV050PairingDepositsAndUnpairRetainsHistory(t *testing.T) {
+	srv, handler, sess, csrf, cleanup := backupFixture(t)
+	defer cleanup()
+	var fixture struct {
+		Settings  map[string]string `json:"settings"`
+		PublicKey []byte            `json:"public_key"`
+	}
+	raw, err := os.ReadFile("../backup/testdata/pairing-v050.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range fixture.Settings {
+		if err := srv.store.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(recoveryclient.RecoveryKeyPath(srv.cfg.DataDir), fixture.PublicKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv.sealer, err = backup.NewSealer(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Backup.Dir = t.TempDir()
+	remote := &upgradeRecovery{t: t}
+	srv.recovery = remote
+	w := do(t, handler, http.MethodPost, "/api/admin/backup/deposit", nil, sess, csrf)
+	if w.Code != http.StatusOK {
+		t.Fatalf("deposit: %d %s", w.Code, w.Body.String())
+	}
+	var res recoveryclient.Result
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Receipt == nil || res.Receipt.CapsuleID != remote.receipt.CapsuleID || res.Receipt.Digest != remote.receipt.Digest {
+		t.Fatal("receipt lost")
+	}
+	local, err := os.ReadFile(res.LocalPath)
+	if err != nil || !bytes.Equal(local, remote.got) {
+		t.Fatal("local and remote must receive the same sealed bytes")
+	}
+	before, err := srv.store.GetSetting("kyrecovery_last_deposit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = do(t, handler, http.MethodDelete, "/api/admin/backup/pairing", nil, sess, csrf)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unpair: %d %s", w.Code, w.Body.String())
+	}
+	after, err := srv.store.GetSetting("kyrecovery_last_deposit")
+	if err != nil || after != before {
+		t.Fatal("unpair removed receipt")
+	}
+	if _, err := os.Stat(res.LocalPath); err != nil {
+		t.Fatal("unpair removed local copy")
+	}
+	key, err := recoveryclient.LoadRecoveryKey(srv.cfg.DataDir, backup.Settings(srv.store))
+	if err != nil || key.Public.ID() != fixture.Settings["kyrecovery_key_id"] {
+		t.Fatal("unpair changed key pin")
+	}
+	if recoveryclient.HasPairing(backup.Settings(srv.store)) {
+		t.Fatal("unpair retained credential")
+	}
+}
+
+type upgradeRecovery struct {
+	t       *testing.T
+	got     []byte
+	receipt recoveryclient.Receipt
+}
+
+func (f *upgradeRecovery) ClaimPairing(context.Context, string, string, string, string) (recoveryclient.PairingResult, error) {
+	return recoveryclient.PairingResult{}, errors.New("must not re-pair")
+}
+func (f *upgradeRecovery) Deposit(_ context.Context, url, token string, raw []byte) (recoveryclient.Receipt, error) {
+	f.t.Helper()
+	if url != "https://recovery.example.com" || token != "synthetic-v050-token" {
+		f.t.Fatal("old pairing was not used")
+	}
+	m, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if m.ServiceName != backup.AppName {
+		f.t.Fatal("wrong service")
+	}
+	digest := sha256.Sum256(raw)
+	f.got = raw
+	f.receipt = recoveryclient.Receipt{CapsuleID: m.CapsuleID, Digest: hex.EncodeToString(digest[:]), SizeBytes: int64(len(raw)), DepositedAt: time.Now().UTC()}
+	return f.receipt, nil
+}
+
+func TestBackupDrillUsesOpenedManifest(t *testing.T) {
+	_, handler, sess, csrf, cleanup := backupFixture(t)
+	defer cleanup()
+	w := do(t, handler, http.MethodPost, "/api/admin/backup/drill", nil, sess, csrf)
+	if w.Code != http.StatusOK {
+		t.Fatalf("drill: %d %s", w.Code, w.Body.String())
+	}
+	var res recoveryclient.DrillResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Passed {
+		t.Fatalf("drill failed: %+v", res.Checks)
+	}
+	found := false
+	for _, c := range res.Checks {
+		if c.Name == "Required tables recipe" && c.Passed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("HTTP drill bypassed opened recipe checks")
 	}
 }

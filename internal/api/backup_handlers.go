@@ -60,20 +60,13 @@ func backupError(w http.ResponseWriter, status int, code, msg string) {
 
 func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 	acc, _ := s.currentUser(r)
-	payload, err := s.collect(r.Context())
+	result, err := backup.RunDrill(r.Context(), s.store, s.cfg.DataDir, s.cfg.ConfigDir, s.cfg.AppVersion)
 	if err != nil {
 		s.auditBackup(r, "admin.backup_drill", acc.ID, "failure", map[string]any{"error": err.Error()})
-		backupError(w, http.StatusInternalServerError, "collect_failed", "Failed to collect the backup payload: "+recoveryclient.AuditSafe(err.Error()))
-		return
-	}
-	root, err := backup.DrillRoot(s.cfg.DataDir)
-	if err != nil {
-		backupError(w, http.StatusInternalServerError, "drill_failed", err.Error())
-		return
-	}
-	result, err := recoveryclient.Drill(r.Context(), root, payload, backup.Checks(payload))
-	if err != nil {
-		s.auditBackup(r, "admin.backup_drill", acc.ID, "failure", map[string]any{"error": err.Error()})
+		if errors.Is(err, recoveryclient.ErrInProgress) {
+			backupError(w, http.StatusConflict, "in_progress", "A restore drill is already in progress")
+			return
+		}
 		backupError(w, http.StatusInternalServerError, "drill_failed", "Failed to run the restore drill")
 		return
 	}
