@@ -79,5 +79,10 @@ opening the capsule with the custodians through deciding what to trust afterward
 drill before you need it. The Backup tab's restore drill proves the format; only the runbook
 with real cards proves the cards.
 
+Drills validate the opened capsule's recipe, core files, database integrity, required tables,
+and active administrator using read-only SQLite access. HTTP and CLI drills against the same
+data directory are serialized; a competing run is refused until the first finishes. Scratch
+files stay under `DATA_DIR/drill` (0700) and are removed on return; the `.lock` file remains.
+
 **Command line.** `kybookmarks-server backup-drill`, `export-capsule <out>`, `deposit`, and
 `restore -capsule <file> -to <dir>` (shares on stdin). `serve` is the default.

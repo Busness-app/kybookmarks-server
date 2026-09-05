@@ -75,5 +75,8 @@ func DrillRoot(dataDir string) (string, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", fmt.Errorf("drill root: %w", err)
 	}
+	if err := os.Chmod(root, 0700); err != nil {
+		return "", fmt.Errorf("drill root permissions: %w", err)
+	}
 	return root, nil
 }

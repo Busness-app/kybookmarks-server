@@ -244,5 +244,8 @@ session cookie minted before the capsule still validates against the restored se
 ## Drill it
 
 Run Steps 1 and 2 against the latest capsule on a scratch machine once a quarter, with the
-real custodians and their real cards, and then delete the output. The in-app drill proves the
-capsule format restores; only this proves the cards do.
+real custodians and their real cards, and then delete the output. The in-app and CLI drills
+verify the opened recipe, required files, SQLite integrity,
+application tables and an active administrator using a throwaway key. They run one at a time
+per data directory, wipe their scratch files on return, and do not use the suite cards. Only
+this custodian exercise proves those cards can restore a real capsule.

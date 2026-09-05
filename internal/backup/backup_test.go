@@ -2,7 +2,9 @@ package backup
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -53,5 +55,52 @@ func TestAuditDetailsIsStableAndBounded(t *testing.T) {
 	// The lib cuts at 200 printable characters and appends an ellipsis.
 	if len(AuditDetails(map[string]any{"k": strings.Repeat("z", 1000)})) > 203 {
 		t.Fatal("unbounded")
+	}
+}
+
+// The ciphertext and pin were produced before the module bump, not by the code under test.
+func TestV050PairingStillOpens(t *testing.T) {
+	raw, err := os.ReadFile("testdata/pairing-v050.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Settings  map[string]string `json:"settings"`
+		PublicKey []byte            `json:"public_key"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	st, dataDir, _ := seed(t)
+	for k, v := range fixture.Settings {
+		if err := st.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(recoveryclient.RecoveryKeyPath(dataDir), fixture.PublicKey, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := NewSealer(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := recoveryclient.LoadPairing(dataDir, Settings(st), sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pairing.Token != "synthetic-v050-token" || pairing.URL != "https://recovery.example.com" || pairing.Key.Public.ID() != fixture.Settings["kyrecovery_key_id"] || pairing.Key.Threshold != 2 || pairing.Key.TotalShares != 3 {
+		t.Fatal("pairing identity changed")
+	}
+	for _, tc := range []struct {
+		key   []byte
+		label string
+	}{{bytes.Repeat([]byte{2}, 32), tokenLabel}, {bytes.Repeat([]byte{1}, 32), "another-product"}} {
+		wrong, err := recoveryclient.NewAESGCMSealer(tc.key, tc.label)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recoveryclient.LoadPairing(dataDir, Settings(st), wrong); err == nil {
+			t.Fatal("pairing opened with wrong key/label")
+		}
 	}
 }
