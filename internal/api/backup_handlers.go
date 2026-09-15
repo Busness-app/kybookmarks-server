@@ -17,8 +17,8 @@ import (
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
 
-	"github.com/Busness-app/kybookmarks-server/internal/audit"
-	"github.com/Busness-app/kybookmarks-server/internal/backup"
+	"github.com/Busness-app/kymark-server/internal/audit"
+	"github.com/Busness-app/kymark-server/internal/backup"
 )
 
 // recoveryClient is the slice of the KyRecovery client the handlers use; tests stand in a
@@ -142,7 +142,7 @@ func (s *Server) handlePairRemote(w http.ResponseWriter, r *http.Request) {
 	if err := recoveryclient.ValidateURL(req.RecoveryURL, s.cfg.Backup.AllowPrivateRecovery); err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "private") {
-			msg += " (KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY=true admits a KyRecovery on your own network behind TLS)"
+			msg += " (KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY=true admits a KyRecovery on your own network behind TLS)"
 		}
 		backupError(w, http.StatusBadRequest, "invalid_url", msg)
 		return
@@ -200,7 +200,7 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, recoveryclient.ErrNotPaired):
 		backupError(w, http.StatusPreconditionFailed, "no_recovery_key", "No recovery key; pair with KyRecovery or pin the suite key by hand")
 	case errors.Is(err, recoveryclient.ErrNoDestination):
-		backupError(w, http.StatusPreconditionFailed, "no_destination", "Nowhere to put a capsule: pair with KyRecovery or set KYBOOKMARKS_BACKUP_DIR")
+		backupError(w, http.StatusPreconditionFailed, "no_destination", "Nowhere to put a capsule: pair with KyRecovery or set KYMARK_BACKUP_DIR")
 	case errors.Is(err, recoveryclient.ErrKeyPinMissing):
 		backupError(w, http.StatusPreconditionFailed, "key_pin_missing", "Paired, but recovery.pub is missing or does not match the pin; restore it or re-pair")
 	case errors.Is(err, recoveryclient.ErrInProgress):

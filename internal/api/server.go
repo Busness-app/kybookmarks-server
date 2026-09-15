@@ -21,19 +21,19 @@ import (
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/syncauth"
 
-	"github.com/Busness-app/kybookmarks-server/internal/audit"
-	"github.com/Busness-app/kybookmarks-server/internal/backup"
-	"github.com/Busness-app/kybookmarks-server/internal/crypto"
-	"github.com/Busness-app/kybookmarks-server/internal/devices"
-	"github.com/Busness-app/kybookmarks-server/internal/sso"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
-	"github.com/Busness-app/kybookmarks-server/internal/vault"
+	"github.com/Busness-app/kymark-server/internal/audit"
+	"github.com/Busness-app/kymark-server/internal/backup"
+	"github.com/Busness-app/kymark-server/internal/crypto"
+	"github.com/Busness-app/kymark-server/internal/devices"
+	"github.com/Busness-app/kymark-server/internal/sso"
+	"github.com/Busness-app/kymark-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/vault"
 )
 
 const (
-	sessionCookieName = "kybookmark_session"
+	sessionCookieName = "kymark_session"
 	csrfCookieName    = "csrf_token"
-	ssoCookieName     = "kybookmark_sso_state"
+	ssoCookieName     = "kymark_sso_state"
 )
 
 // BackupConfig is the env-derived side of the backup contract. The live schedule is an

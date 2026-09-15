@@ -1,6 +1,6 @@
-# KyBookmark Server
+# KyMark Server
 
-KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and management server for the KySecurity Suite of software (KySignOn, KyPost, KyPasswords, KyBookmarks, KyNotes).
+KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and management server for the KySecurity Suite of software (KySignOn, KyPost, KyPasswords, KyMark, KyNotes).
 
 ## Core Capabilities & Responsibilities
 
@@ -11,7 +11,7 @@ KyBookmark Server is the zero-knowledge encrypted bookmark synchronization and m
 5. **90s QR / PIN Device Pairing**: Ephemeral pairing flow (`/api/devices/pair/request`, `/api/devices/pair/approve`, `/api/devices/pair/redeem`) for trusted mobile and browser extensions.
 6. **Tamper-Evident Audit Logging**: HMAC-SHA256 hash chained log trail with verification. The chain key is per-install and never a constant — see "Audit chain" below.
 7. **Patina Look & Feel**: React + Vite interface with KySecurity Patina theme (`#0d0f14`, cyan `#4deeea`, `Space Grotesk`, `IBM Plex Mono`).
-8. **KyRecovery Backups**: sealed `kycap/3` capsules through `ky-primitives/recoveryclient`: pair with KyRecovery or pin the suite key by hand, local copies in `KYBOOKMARKS_BACKUP_DIR`, an admin-set schedule, restore drill, and a `restore` subcommand. Every backup route, including the capsule export, is a CSRF-protected admin `POST`/`PUT`/`DELETE`; a GET never exports. See "KyRecovery backups" below and `docs/RESTORE.md`.
+8. **KyRecovery Backups**: sealed `kycap/3` capsules through `ky-primitives/recoveryclient`: pair with KyRecovery or pin the suite key by hand, local copies in `KYMARK_BACKUP_DIR`, an admin-set schedule, restore drill, and a `restore` subcommand. Every backup route, including the capsule export, is a CSRF-protected admin `POST`/`PUT`/`DELETE`; a GET never exports. See "KyRecovery backups" below and `docs/RESTORE.md`.
 
 ## Audit chain
 
@@ -25,10 +25,10 @@ proves nothing.
 | `AUDIT_KEY` | Optional. Exactly 32 bytes as hex (`openssl rand -hex 32`) or base64. A value that is set but malformed refuses to start. Unset means the server generates a key into `CONFIG_DIR/audit.key` (0600) on first run. |
 | `HMAC_SECRET` | **Legacy verification only.** Entries written before the chain was keyed are chained with this; it is never used to write. Leave it set to whatever the deployment used previously, or unset to fall back to the published constant those entries actually used. |
 | `SYNC_SECRET` | Signs the `/api/sync/events` directory webhook. **No default**: unset makes the endpoint reject every request. |
-| `KYBOOKMARKS_BACKUP_DIR` | Directory for sealed local backup copies. Unset means none. |
-| `KYBOOKMARKS_BACKUP_KEEP` | Local copies retained, default 7, at least 1. Refused at startup below 1. |
-| `KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL` | Default schedule only (`24h`); the admin's setting wins. `0` off, floor `15m`. |
-| `KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY` | Admit private and CGNAT KyRecovery destinations. HTTPS stays mandatory. Logged at startup and on the pairing audit row. |
+| `KYMARK_BACKUP_DIR` | Directory for sealed local backup copies. Unset means none. |
+| `KYMARK_BACKUP_KEEP` | Local copies retained, default 7, at least 1. Refused at startup below 1. |
+| `KYMARK_BACKUP_DEPOSIT_INTERVAL` | Default schedule only (`24h`); the admin's setting wins. `0` off, floor `15m`. |
+| `KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY` | Admit private and CGNAT KyRecovery destinations. HTTPS stays mandatory. Logged at startup and on the pairing audit row. |
 | `deployment.key` | Minted into `CONFIG_DIR` by `keyfile` on first run. Seals the KyRecovery token at rest and nothing else. |
 
 Rules for anyone touching this package:
@@ -145,11 +145,11 @@ must never trust a caller-supplied user ID without that binding.
 `internal/backup` holds only what is this product's: `Collect` (SQLite `VACUUM INTO` through
 the live handle, the four `CONFIG_DIR` keys, `sso.json`, `recovery.pub`, the audit log, a
 manifest), the drill `Checks`, the `Settings` adapter over the `settings` table, the `Sealer`
-under `deployment.key` (label `kybookmarks:setting:kyrecovery_token`), and `AuditDetails`.
+under `deployment.key` (label `kymark:setting:kyrecovery_token`), and `AuditDetails`.
 Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore are
 `ky-primitives/recoveryclient`; do not reimplement any of them here.
 
-- Service name is `backup.AppName` (`KyBookmarks`) everywhere: the pairing claim, every
+- Service name is `backup.AppName` (`KyMark`) everywhere: the pairing claim, every
   manifest, local copy names.
 - **Step-up:** this product has none. Admin role plus CSRF (`withAdmin`) is the equivalent for
   every `/api/admin/backup/*` route; `TestBackupRoutesRequireAdmin` pins it.
@@ -177,8 +177,8 @@ Pairing, key pin, schedule, local copies, deposit, drill mechanics and restore a
 
 - **Backend Unit & Integration Tests**: `go test -v ./...`
 - **Frontend Production Build**: `cd frontend && npm run build`
-- **Docker Production Image**: `docker build -t kybookmarks-server:latest .` (CI `docker` job builds it and waits for the container to report healthy)
-- On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busness-app/kybookmarks-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kybookmarks-server:local`) so every compose command, recovery docs included, uses the local build.
+- **Docker Production Image**: `docker build -t kymark-server:latest .` (CI `docker` job builds it and waits for the container to report healthy)
+- On a push to `master` that passes every job, `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busness-app/kymark-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kymark-server:local`) so every compose command, recovery docs included, uses the local build.
 - **Audit Ablation Suite**: `python3 scripts/ablate.py`
 - **Backup export regression**: `go test ./internal/api -run 'TestExportCapsule'`
 

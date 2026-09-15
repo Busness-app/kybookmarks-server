@@ -9,11 +9,11 @@
 #     && printf 'COMPOSE_FILE=%s\n' "$cf" >> "$t" && mv "$t" .env)
 # Further overlays chain onto the same value, e.g. `:docker-compose.lan-dns.yml`;
 # an explicit `-f` list replaces COMPOSE_FILE entirely, so avoid mixing the two.
-# The result is tagged kybookmarks-server:local so it never occupies the published name. This
-# image also wins over a KYBOOKMARKS_IMAGE digest pin in .env: a source install always runs its build.
+# The result is tagged kymark-server:local so it never occupies the published name. This
+# image also wins over a KYMARK_IMAGE digest pin in .env: a source install always runs its build.
 services:
-  kybookmarks-server:
-    image: kybookmarks-server:local
+  kymark-server:
+    image: kymark-server:local
     pull_policy: build
     build:
       context: .

@@ -9,7 +9,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/keyfile"
 
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 // seed creates a data dir with a live store and every required CONFIG_DIR file.

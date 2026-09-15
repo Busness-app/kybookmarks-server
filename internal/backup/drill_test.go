@@ -16,7 +16,7 @@ import (
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 func TestChecksFailOnMissingDatabase(t *testing.T) {

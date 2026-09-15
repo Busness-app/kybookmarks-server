@@ -1,10 +1,10 @@
 # Security Policy
 
-KyBookmarks is a self-hosted encrypted bookmark vault. This document describes security
+KyMark is a self-hosted encrypted bookmark vault. This document describes security
 practices, known limitations, responsible disclosure, and deployment security considerations.
 
 > **Note:** sections below marked with the KyPost name were inherited from a sibling project
-> and describe features KyBookmarks does not have. They are being rewritten; treat the
+> and describe features KyMark does not have. They are being rewritten; treat the
 > Audit Chain, Directory Sync Webhook and Unauthenticated Endpoints sections as authoritative.
 
 ## Reporting Security Vulnerabilities
@@ -13,7 +13,7 @@ If you discover a security vulnerability in KyPost, please report it responsibly
 
 ### How to Report
 
-1. Go to the [Security Advisories](https://github.com/Busness-app/kybookmarks-server/security/advisories) page
+1. Go to the [Security Advisories](https://github.com/Busness-app/kymark-server/security/advisories) page
 2. Click "Report a vulnerability"
 3. Provide a detailed description, affected versions, and reproduction steps if applicable
 4. Do not disclose the vulnerability publicly until a patch is available
@@ -393,7 +393,7 @@ Security-sensitive PRs should include:
 
 ## Security Contacts
 
-- **Vulnerability reports:** [GitHub Security Advisories](https://github.com/Busness-app/kybookmarks-server/security/advisories)
+- **Vulnerability reports:** [GitHub Security Advisories](https://github.com/Busness-app/kymark-server/security/advisories)
 - **Maintainer:** [Yoshiofthewire](https://github.com/Yoshiofthewire)
 
 ## Additional Resources

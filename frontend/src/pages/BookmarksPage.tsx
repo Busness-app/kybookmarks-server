@@ -363,7 +363,7 @@ export const BookmarksPage: React.FC<BookmarksPageProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `kybookmarks_export_${new Date().toISOString().slice(0, 10)}.html`;
+    a.download = `kymark_export_${new Date().toISOString().slice(0, 10)}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };

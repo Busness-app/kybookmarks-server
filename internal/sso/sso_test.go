@@ -18,13 +18,13 @@ func TestSSOPKCEAndSettings(t *testing.T) {
 	settings := SSOSettings{
 		Enabled:   true,
 		IssuerURL: "https://auth.urlxl.com",
-		ClientID:  "kybookmarks",
+		ClientID:  "kymark",
 	}
 	if err := store.Save(settings); err != nil {
 		t.Fatal(err)
 	}
 	loaded := store.Load()
-	if !loaded.Enabled || loaded.ClientID != "kybookmarks" {
+	if !loaded.Enabled || loaded.ClientID != "kymark" {
 		t.Fatalf("failed to load saved settings: %+v", loaded)
 	}
 }

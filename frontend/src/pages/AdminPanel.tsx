@@ -44,7 +44,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
   }>({
     enabled: false,
     issuerUrl: 'https://auth.urlxl.com',
-    clientId: 'kybookmarks',
+    clientId: 'kymark',
     redirectUri: '',
     autoProvision: true,
   });
@@ -155,7 +155,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
     <div className="view-container" style={{ overflowY: 'auto', padding: '2rem' }}>
       <div style={{ maxWidth: '960px', margin: '0 auto', width: '100%' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-          KyBookmarks Administration
+          KyMark Administration
         </h1>
         <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1.75rem' }}>
           Manage user accounts, KySignOn SSO discovery, and tamper-evident cryptographic audit logs.
@@ -328,7 +328,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser }) => {
                   <input
                     type="text"
                     className="input input-mono"
-                    placeholder="kybookmarks"
+                    placeholder="kymark"
                     value={ssoSettings.clientId}
                     onChange={(e) => setSSOSettings({ ...ssoSettings, clientId: e.target.value })}
                     required

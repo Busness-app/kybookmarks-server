@@ -1,4 +1,4 @@
-# KyBookmarks Server
+# KyMark Server
 
 Zero-knowledge bookmark sync for the KySecurity suite. Bookmarks are encrypted in the browser;
 the server stores opaque payloads, syncs them between trusted devices, signs users in through
@@ -14,10 +14,10 @@ docker compose up -d
 ```
 
 Source install (never paste this into a published-image install: the build overlay wins over a
-`KYBOOKMARKS_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
+`KYMARK_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
 new checkout; an install from before the published image existed has no such line yet, so run
 this block once and confirm with `docker compose config --images`, which must print
-`kybookmarks-server:local` rather than the `ghcr.io` name):
+`kymark-server:local` rather than the `ghcr.io` name):
 
 ```bash
 (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env \
@@ -34,7 +34,7 @@ Update a published-image install on the rolling tag:
 docker compose pull && docker compose up -d
 ```
 
-A digest-pinned install (`KYBOOKMARKS_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
+A digest-pinned install (`KYMARK_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
 
 Open `http://127.0.0.1:5869` and complete first-run setup. Every variable below has a default
@@ -48,11 +48,11 @@ except `SYNC_SECRET`, which has none on purpose.
 | `AUDIT_KEY` | unset | Optional. Exactly 32 bytes, hex or base64. Unset mints `CONFIG_DIR/audit.key` on first run |
 | `HMAC_SECRET` | unset | Legacy: verifies audit entries written before the chain was keyed. Never used to write |
 | `SYNC_SECRET` | unset | KySignOn directory-sync signing secret, at least 16 bytes. Unset disables the webhook |
-| `KYBOOKMARKS_BACKUP_DIR` | unset | Directory for sealed local backup copies. Unset means none; `/app/backups` is a volume in the compose file |
-| `KYBOOKMARKS_BACKUP_KEEP` | `7` | How many local copies to keep; older ones are pruned. Must be at least 1 |
-| `KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin sets the live one in the Backup tab; `0` is off, the floor is `15m` |
-| `KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on a private or CGNAT address. HTTPS stays mandatory; loopback never |
-| `KYBOOKMARKS_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's DNS server, for LAN-only names |
+| `KYMARK_BACKUP_DIR` | unset | Directory for sealed local backup copies. Unset means none; `/app/backups` is a volume in the compose file |
+| `KYMARK_BACKUP_KEEP` | `7` | How many local copies to keep; older ones are pruned. Must be at least 1 |
+| `KYMARK_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin sets the live one in the Backup tab; `0` is off, the floor is `15m` |
+| `KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on a private or CGNAT address. HTTPS stays mandatory; loopback never |
+| `KYMARK_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's DNS server, for LAN-only names |
 
 ## Disaster recovery
 
@@ -69,7 +69,7 @@ each user's key; no server key opens it.
 - **KyRecovery**, paired from the Backup tab with a six-digit code the KyRecovery admin
   generates. Pairing pins the suite key and stores a deposit credential, sealed at rest under
   `deployment.key`.
-- **A local directory**, `KYBOOKMARKS_BACKUP_DIR`, for an instance with no KyRecovery. Pin the
+- **A local directory**, `KYMARK_BACKUP_DIR`, for an instance with no KyRecovery. Pin the
   suite public key by hand in the Backup tab; the ceremony page shows it with the k-of-n it
   was split with.
 
@@ -88,20 +88,20 @@ recreated to pick it up:
 The snippet appends `docker-compose.lan-dns.yml` to whatever `COMPOSE_FILE` chain `.env` already
 holds (build overlay, local override) and leaves the rest of the chain alone; the resolver and the private-recovery flag
 sit next to it: the resolver comes from an exported
-`KYBOOKMARKS_DNS` (`export KYBOOKMARKS_DNS=<addr>`; fish: `set -x KYBOOKMARKS_DNS <addr>`) or, when that is unset, from the `KYBOOKMARKS_DNS` line
+`KYMARK_DNS` (`export KYMARK_DNS=<addr>`; fish: `set -x KYMARK_DNS <addr>`) or, when that is unset, from the `KYMARK_DNS` line
 already in `.env`; there is no default, the block refuses to guess. An exported value overrides
-`.env`, so re-running is a no-op only while `KYBOOKMARKS_DNS` is unset in your shell; the flag is set to true. One block for every install type:
+`.env`, so re-running is a no-op only while `KYMARK_DNS` is unset in your shell; the flag is set to true. One block for every install type:
 
 ```bash
 (umask 077; touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
-  && dns=${KYBOOKMARKS_DNS:-$({ grep '^KYBOOKMARKS_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
-  && : "${dns:?no resolver chosen: export KYBOOKMARKS_DNS=<your LAN resolver> (fish: set -x KYBOOKMARKS_DNS <addr>), then re-run this block}" \
+  && dns=${KYMARK_DNS:-$({ grep '^KYMARK_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
+  && : "${dns:?no resolver chosen: export KYMARK_DNS=<your LAN resolver> (fish: set -x KYMARK_DNS <addr>), then re-run this block}" \
   && case ":$cf:" in *:docker-compose.lan-dns.yml:*) ;; *) cf="$cf:docker-compose.lan-dns.yml";; esac \
-  && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYBOOKMARKS_DNS=' -e '^KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
-  && printf 'COMPOSE_FILE=%s\nKYBOOKMARKS_DNS=%s\nKYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY=true\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
+  && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYMARK_DNS=' -e '^KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
+  && printf 'COMPOSE_FILE=%s\nKYMARK_DNS=%s\nKYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY=true\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
 docker compose up -d --force-recreate
-docker inspect KyBookmarks-Server --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
+docker inspect KyMark-Server --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
 ```
 
 Turning it off: remove the resolver and the flag, strip only `docker-compose.lan-dns.yml` from
@@ -110,7 +110,7 @@ Turning it off: remove the resolver and the flag, strip only `docker-compose.lan
 ```bash
 (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2- | tr ':' '\n' | grep -vx docker-compose.lan-dns.yml | paste -sd: -) \
-  && { grep -v -e '^COMPOSE_FILE=' -e '^KYBOOKMARKS_DNS=' -e '^KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
+  && { grep -v -e '^COMPOSE_FILE=' -e '^KYMARK_DNS=' -e '^KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
   && { [ -z "$cf" ] || [ "$cf" = docker-compose.yml ] || printf 'COMPOSE_FILE=%s\n' "$cf" >> "$t"; } && mv "$t" .env)
 docker compose up -d --force-recreate
 ```
@@ -133,5 +133,5 @@ and active administrator using read-only SQLite access. HTTP and CLI drills agai
 data directory are serialized; a competing run is refused until the first finishes. Scratch
 files stay under `DATA_DIR/drill` (0700) and are removed on return; the `.lock` file remains.
 
-**Command line.** `kybookmarks-server backup-drill`, `export-capsule <out>`, `deposit`, and
+**Command line.** `kymark-server backup-drill`, `export-capsule <out>`, `deposit`, and
 `restore -capsule <file> -to <dir>` (shares on stdin). `serve` is the default.

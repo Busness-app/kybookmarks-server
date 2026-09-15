@@ -40,7 +40,7 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 		}
 	}
 	for _, table := range requiredTables {
-		add("Recipe requires: "+table, declared[table], "required by KyBookmarks")
+		add("Recipe requires: "+table, declared[table], "required by KyMark")
 	}
 	admin, ok := recipe["require_any_admin"].(bool)
 	add("Administrator recipe", ok && admin, "require_any_admin must be true")
@@ -83,7 +83,7 @@ func Checks(dir string, opened capsule.Manifest) []recoveryclient.Check {
 		core = append(core, "config/"+name)
 	}
 	for _, name := range core {
-		add("Required member: "+name, members[name], "required by KyBookmarks")
+		add("Required member: "+name, members[name], "required by KyMark")
 	}
 	if !dbPresent {
 		return out

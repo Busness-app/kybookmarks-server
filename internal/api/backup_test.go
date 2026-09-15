@@ -21,7 +21,7 @@ import (
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
 
-	"github.com/Busness-app/kybookmarks-server/internal/backup"
+	"github.com/Busness-app/kymark-server/internal/backup"
 )
 
 type fakeRecovery struct {
@@ -155,7 +155,7 @@ func TestRunWithPinnedKeyAndNoDestination(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	w := do(t, handler, http.MethodPost, "/api/admin/backup/deposit", nil, sess, csrf)
-	if w.Code != http.StatusPreconditionFailed || !strings.Contains(w.Body.String(), "KYBOOKMARKS_BACKUP_DIR") {
+	if w.Code != http.StatusPreconditionFailed || !strings.Contains(w.Body.String(), "KYMARK_BACKUP_DIR") {
 		t.Fatalf("no destination: %d %s", w.Code, w.Body.String())
 	}
 }

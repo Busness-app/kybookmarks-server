@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// Account represents a user in KyBookmarks.
+// Account represents a user in KyMark.
 type Account struct {
 	ID               string    `json:"id"`
 	Username         string    `json:"username"`

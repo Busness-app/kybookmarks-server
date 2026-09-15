@@ -16,9 +16,9 @@ import (
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kybookmarks-server/internal/crypto"
-	"github.com/Busness-app/kybookmarks-server/internal/sso"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/crypto"
+	"github.com/Busness-app/kymark-server/internal/sso"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 type LoginRequest struct {
@@ -667,7 +667,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ssoTransactionCookie(state, verifier, linkUserID, nonce string) string {
 	payload := strings.Join([]string{state, verifier, linkUserID, nonce}, "|")
 	mac := hmac.New(sha256.New, s.saltKey)
-	_, _ = mac.Write([]byte("kybookmarks:sso-transaction\x00" + payload))
+	_, _ = mac.Write([]byte("kymark:sso-transaction\x00" + payload))
 	return payload + "|" + hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -702,7 +702,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  status,
-		"service": "kybookmarks-server",
+		"service": "kymark-server",
 		"time":    time.Now().UTC(),
 	})
 }

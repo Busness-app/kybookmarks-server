@@ -1,4 +1,4 @@
-# KyBookmarks Design
+# KyMark Design
 
 This document turns [`PROMPT.md`](PROMPT.md) into a small implementation plan.
 The spelling of this filename is retained as requested.
@@ -28,7 +28,7 @@ storage, version checks, tombstones, rate limits, and administrative audit
 logs.
 
 Reuse KyPost patterns for Go/SQLite, React/Vite, TOTP, proof-of-work, Turnstile,
-admin screens, and QR pairing. Keep the KyBookmarks account and database
+admin screens, and QR pairing. Keep the KyMark account and database
 standalone; the KyPost push service is the only approved v1 service integration.
 
 ## 2. Repository layout
@@ -177,18 +177,18 @@ Retain the latest 20 bookmark versions and reconciliation-required versions for
 
 The extension has two explicit modes:
 
-1. Dedicated root: sync only below a `KyBookmarks` browser folder.
-2. Entire tree: map the browser bookmark tree to the KyBookmarks tree.
+1. Dedicated root: sync only below a `KyMark` browser folder.
+2. Entire tree: map the browser bookmark tree to the KyMark tree.
 
 On first sync, offer:
 
-- Merge into KyBookmarks.
-- Replace browser bookmarks with KyBookmarks.
+- Merge into KyMark.
+- Replace browser bookmarks with KyMark.
 
 Before replacement, export the current browser tree to HTML, save it locally,
-and require explicit confirmation. Browser deletion becomes a KyBookmarks
+and require explicit confirmation. Browser deletion becomes a KyMark
 tombstone, not an immediate permanent delete. Native browser nodes map to
-KyBookmarks object IDs through extension-local state and encrypted sync data.
+KyMark object IDs through extension-local state and encrypted sync data.
 
 Use browser APIs for bookmark events and a shared TypeScript sync package for
 version and conflict behavior. Keep browser-specific API differences in small
@@ -210,7 +210,7 @@ adapters.
 ## 9. Authentication and request security
 
 Reuse KyPost’s proven auth and challenge patterns, but keep sessions and account
-data in KyBookmarks. Required controls:
+data in KyMark. Required controls:
 
 - Argon2id password verification with a high enough memory/time cost.
 - Secure, HttpOnly, SameSite cookies for web sessions; short-lived device
@@ -238,7 +238,7 @@ All imports and exports run on a trusted client:
 - Same-name folder conflicts prompt the user to merge or keep separate.
 - Over-depth folders are rejected with item-level errors.
 - Plain HTML export is compatible with browsers and is intentionally plaintext.
-- Encrypted KyBookmarks archive export uses a separate archive password.
+- Encrypted KyMark archive export uses a separate archive password.
 - Import must validate archive structure, protocol version, object IDs, limits,
   authentication tags, and folder depth before applying changes.
 

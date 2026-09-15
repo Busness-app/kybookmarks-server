@@ -10,7 +10,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 // Member paths say where each file restores to: config/* into CONFIG_DIR, everything
@@ -84,7 +84,7 @@ func Collect(ctx context.Context, st *store.Store, dataDir, configDir, appVersio
 	manifest, _ := json.Marshal(map[string]any{
 		"service":     AppName,
 		"app_version": appVersion,
-		"restore":     "kybookmarks-server restore -capsule <file> -to <dir>; config/* go to CONFIG_DIR, config-sso/sso.json to DATA_DIR/config/, the rest to DATA_DIR",
+		"restore":     "kymark-server restore -capsule <file> -to <dir>; config/* go to CONFIG_DIR, config-sso/sso.json to DATA_DIR/config/, the rest to DATA_DIR",
 	})
 	files = append(files, recoveryclient.File{Path: manifestMember, Data: manifest, Mode: 0600})
 

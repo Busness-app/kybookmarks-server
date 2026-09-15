@@ -1,7 +1,7 @@
-name: kybookmarks-server
+name: kymark-server
 
 services:
-  kybookmarks-server:
+  kymark-server:
     # The published, attested image. `pull` moves to the newest one; `up` uses what is
     # present, otherwise pulls. This file never builds: a source build would occupy this
     # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
@@ -14,31 +14,31 @@ services:
     # AND record your commit as its source, or the chain stops. The new .env is staged in this
     # directory and renamed atomically over the old one only if the filtered copy was written
     # in full, so a failed check, an unreadable .env or a short write never replaces your
-    # secrets. Re-run with a newer sha to move; delete the KYBOOKMARKS_IMAGE line to follow :latest
+    # secrets. Re-run with a newer sha to move; delete the KYMARK_IMAGE line to follow :latest
     # again. A source install is unaffected: the build overlay's image wins over this pin.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kybookmarks-server:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busness-app/kybookmarks-server@$d" --repo Busness-app/kybookmarks-server \
-    #          --cert-identity https://github.com/Busness-app/kybookmarks-server/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kybookmarks-server@$d" --repo Busness-app/kybookmarks-server \
-    #          --cert-identity https://github.com/Busness-app/kybookmarks-server/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kymark-server:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busness-app/kymark-server@$d" --repo Busness-app/kymark-server \
+    #          --cert-identity https://github.com/Busness-app/kymark-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kymark-server@$d" --repo Busness-app/kymark-server \
+    #          --cert-identity https://github.com/Busness-app/kymark-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
-    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYBOOKMARKS_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KYBOOKMARKS_IMAGE=ghcr.io/busness-app/kybookmarks-server@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KYBOOKMARKS_IMAGE=ghcr.io/busness-app/kybookmarks-server@$d" .env
-    image: ${KYBOOKMARKS_IMAGE:-ghcr.io/busness-app/kybookmarks-server:latest}
+    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYMARK_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+    #         && echo "KYMARK_IMAGE=ghcr.io/busness-app/kymark-server@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KYMARK_IMAGE=ghcr.io/busness-app/kymark-server@$d" .env
+    image: ${KYMARK_IMAGE:-ghcr.io/busness-app/kymark-server:latest}
     pull_policy: missing
-    container_name: KyBookmarks-Server
+    container_name: KyMark-Server
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
 
     networks:
       kypost-net:
-        ipv4_address: ${KYBOOKMARKS_IP:-10.89.0.6}
+        ipv4_address: ${KYMARK_IP:-10.89.0.6}
 
     ports:
-      - "${KYBOOKMARKS_BIND:-127.0.0.1}:5869:5869"
+      - "${KYMARK_BIND:-127.0.0.1}:5869:5869"
 
     environment:
       PORT: 5869
@@ -56,18 +56,18 @@ services:
       SYNC_SECRET: ${SYNC_SECRET:-}
       # Sealed backups. Empty = no local copies; pair with KyRecovery or set this to
       # /app/backups (the volume below) so an instance with no KyRecovery still has backups.
-      KYBOOKMARKS_BACKUP_DIR: ${KYBOOKMARKS_BACKUP_DIR:-}
-      KYBOOKMARKS_BACKUP_KEEP: ${KYBOOKMARKS_BACKUP_KEEP:-7}
+      KYMARK_BACKUP_DIR: ${KYMARK_BACKUP_DIR:-}
+      KYMARK_BACKUP_KEEP: ${KYMARK_BACKUP_KEEP:-7}
       # Default schedule only; the admin sets the live one in the Backup tab.
-      KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL: ${KYBOOKMARKS_BACKUP_DEPOSIT_INTERVAL:-24h}
+      KYMARK_BACKUP_DEPOSIT_INTERVAL: ${KYMARK_BACKUP_DEPOSIT_INTERVAL:-24h}
       # Off: a KyRecovery on a private or CGNAT address is refused. HTTPS is always required.
-      KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
-      # KYBOOKMARKS_DNS lives only in docker-compose.lan-dns.yml.
+      KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYMARK_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      # KYMARK_DNS lives only in docker-compose.lan-dns.yml.
 
     volumes:
       - kybookmarks_data:/app/data
       - kybookmarks_config:/app/config
-      # Used only when KYBOOKMARKS_BACKUP_DIR=/app/backups.
+      # Used only when KYMARK_BACKUP_DIR=/app/backups.
       - kybookmarks_backups:/app/backups
 
     healthcheck:
@@ -78,6 +78,8 @@ services:
       start_period: 5s
 
 volumes:
+  # Keep the established volume names so renaming the service never creates
+  # empty volumes and hides an existing installation's data.
   kybookmarks_data:
   kybookmarks_config:
   kybookmarks_backups:

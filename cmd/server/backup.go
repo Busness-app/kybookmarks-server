@@ -13,10 +13,10 @@ import (
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kybookmarks-server/internal/api"
-	"github.com/Busness-app/kybookmarks-server/internal/audit"
-	"github.com/Busness-app/kybookmarks-server/internal/backup"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/api"
+	"github.com/Busness-app/kymark-server/internal/audit"
+	"github.com/Busness-app/kymark-server/internal/backup"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 // runBudget bounds one backup run; the lib's own upload budget is 15 minutes.

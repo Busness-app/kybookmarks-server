@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 var (

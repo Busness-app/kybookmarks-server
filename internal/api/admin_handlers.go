@@ -10,9 +10,9 @@ import (
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/syncauth"
 
-	"github.com/Busness-app/kybookmarks-server/internal/crypto"
-	"github.com/Busness-app/kybookmarks-server/internal/sso"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/crypto"
+	"github.com/Busness-app/kymark-server/internal/sso"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {

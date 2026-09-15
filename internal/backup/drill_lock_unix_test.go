@@ -14,9 +14,9 @@ import (
 )
 
 func TestDrillLockSubprocess(t *testing.T) {
-	if root := os.Getenv("KYBOOKMARKS_TEST_DRILL_ROOT"); root != "" {
+	if root := os.Getenv("KYMARK_TEST_DRILL_ROOT"); root != "" {
 		lock, err := lockDrill(root)
-		if os.Getenv("KYBOOKMARKS_TEST_DRILL_BUSY") == "1" {
+		if os.Getenv("KYMARK_TEST_DRILL_BUSY") == "1" {
 			if !errors.Is(err, recoveryclient.ErrInProgress) {
 				if lock != nil {
 					lock.Close()
@@ -44,7 +44,7 @@ func TestDrillLockSubprocess(t *testing.T) {
 	child := func(path, busy string) {
 		t.Helper()
 		cmd := exec.Command(os.Args[0], "-test.run=^TestDrillLockSubprocess$")
-		cmd.Env = append(os.Environ(), "KYBOOKMARKS_TEST_DRILL_ROOT="+path, "KYBOOKMARKS_TEST_DRILL_BUSY="+busy)
+		cmd.Env = append(os.Environ(), "KYMARK_TEST_DRILL_ROOT="+path, "KYMARK_TEST_DRILL_BUSY="+busy)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("child: %v %s", err, out)
 		}

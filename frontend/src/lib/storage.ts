@@ -1,7 +1,7 @@
 // Local device vault storage for zero-knowledge encryption keys
 // Enables 1-click SSO unlock on trusted devices without compromising zero-knowledge server boundary.
 
-const DB_NAME = 'kybookmarks-device-vault';
+const DB_NAME = 'kymark-device-vault';
 const STORE_NAME = 'keys';
 
 function openDatabase(): Promise<IDBDatabase> {

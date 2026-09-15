@@ -18,7 +18,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /kybookmarks-server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /kymark-server ./cmd/server
 
 # Stage 3: Production Runtime
 FROM alpine:3.24
@@ -26,14 +26,14 @@ RUN apk add --no-cache ca-certificates tzdata curl
 
 WORKDIR /app
 
-RUN addgroup -S kybookmark && adduser -S kybookmark -G kybookmark
+RUN addgroup -S kymark && adduser -S kymark -G kymark
 
-COPY --from=backend-builder /kybookmarks-server /usr/local/bin/kybookmarks-server
+COPY --from=backend-builder /kymark-server /usr/local/bin/kymark-server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-RUN mkdir -p /app/data /app/config /app/backups && chown -R kybookmark:kybookmark /app/data /app/config /app/backups
+RUN mkdir -p /app/data /app/config /app/backups && chown -R kymark:kymark /app/data /app/config /app/backups
 
-USER kybookmark
+USER kymark
 
 ENV PORT=5869 \
     DATA_DIR=/app/data \
@@ -45,4 +45,4 @@ EXPOSE 5869
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5869/api/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/kybookmarks-server"]
+ENTRYPOINT ["/usr/local/bin/kymark-server"]

@@ -15,11 +15,11 @@ import (
 
 	"github.com/Busness-app/ky-primitives/syncauth"
 
-	"github.com/Busness-app/kybookmarks-server/internal/audit"
-	"github.com/Busness-app/kybookmarks-server/internal/devices"
-	"github.com/Busness-app/kybookmarks-server/internal/sso"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
-	"github.com/Busness-app/kybookmarks-server/internal/vault"
+	"github.com/Busness-app/kymark-server/internal/audit"
+	"github.com/Busness-app/kymark-server/internal/devices"
+	"github.com/Busness-app/kymark-server/internal/sso"
+	"github.com/Busness-app/kymark-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/vault"
 )
 
 func setupTestServer(t *testing.T) (*Server, http.Handler, func()) {

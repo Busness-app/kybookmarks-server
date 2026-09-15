@@ -1,4 +1,4 @@
-module github.com/Busness-app/kybookmarks-server
+module github.com/Busness-app/kymark-server
 
 go 1.26.6
 

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kybookmarks-server/internal/sso/ssotest"
+	"github.com/Busness-app/kymark-server/internal/sso/ssotest"
 )
 
 func TestVerifiedClaimsAcceptsAGoodTokenAndRefusesAlgNone(t *testing.T) {
@@ -20,10 +20,10 @@ func TestVerifiedClaimsAcceptsAGoodTokenAndRefusesAlgNone(t *testing.T) {
 	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
 
-	v := NewVerifier(srv.URL, "kybookmarks", srv.Client())
+	v := NewVerifier(srv.URL, "kymark", srv.Client())
 	now := time.Now().Unix()
 	good := ssotest.Mint(t, key, map[string]any{
-		"iss": srv.URL, "aud": "kybookmarks", "sub": "user-1", "nonce": "n1",
+		"iss": srv.URL, "aud": "kymark", "sub": "user-1", "nonce": "n1",
 		"email": "u@example.com", "email_verified": true, "preferred_username": "u", "role": "admin",
 		"iat": now, "exp": now + 300,
 	})

@@ -29,7 +29,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
     try {
       const sess = await postJSON<{ pin: string; pairingToken: string }>('/api/devices/pair/request', {
         userId: user.id,
-        deviceName: 'KyBookmarks Browser Extension / App',
+        deviceName: 'KyMark Browser Extension / App',
         deviceType: 'browser_chrome',
       });
 
@@ -104,7 +104,7 @@ export const DevicePairingModal: React.FC<DevicePairingModalProps> = ({
 
         <div className="modal-body" style={{ textAlign: 'center' }}>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-            Open the KyBookmarks browser extension or mobile app and scan this QR code or enter the 6-digit PIN.
+            Open the KyMark browser extension or mobile app and scan this QR code or enter the 6-digit PIN.
           </p>
 
           {error && (

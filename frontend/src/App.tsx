@@ -16,7 +16,7 @@ import {
   Key,
 } from 'lucide-react';
 
-const SESSION_KEY_NAME = 'kybookmarks_vault_session_key';
+const SESSION_KEY_NAME = 'kymark_vault_session_key';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any | null>(null);
@@ -95,7 +95,7 @@ export const App: React.FC = () => {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-primary)', color: 'var(--cyan)' }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem', letterSpacing: '0.1em' }}>
-          LOADING KYBOOKMARKS...
+          LOADING KYMARK...
         </div>
       </div>
     );
@@ -117,8 +117,8 @@ export const App: React.FC = () => {
       {/* Navbar */}
       <nav className="navbar">
         <div className="nav-brand">
-          <img src="/KyBookmarks.png" alt="KyBookmarks" style={{ width: '28px', height: '28px', borderRadius: '6px' }} />
-          <span>KyBookmarks</span>
+          <img src="/KyMark.png" alt="KyMark" style={{ width: '28px', height: '28px', borderRadius: '6px' }} />
+          <span>KyMark</span>
           <span className="brand-badge">E2EE ZERO-KNOWLEDGE</span>
         </div>
 

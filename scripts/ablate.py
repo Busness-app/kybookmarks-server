@@ -124,8 +124,8 @@ ABLATIONS = [
   '\tcode := http.StatusOK\n\tif status == "degraded" {\n\t\tcode = http.StatusServiceUnavailable\n\t}\n\twriteJSON(w, code, map[string]any{\n\t\t"status":  status,'),
 
  ("health hands the failure count to anyone who asks", AUTH, "TestAuditWriteFailureIsNotSilent",
-  '\t\t"service": "kybookmarks-server",\n\t\t"time":    time.Now().UTC(),',
-  '\t\t"service": "kybookmarks-server",\n\t\t"auditWriteFailures": s.auditFailures.Load(),\n\t\t"time":    time.Now().UTC(),'),
+  '\t\t"service": "kymark-server",\n\t\t"time":    time.Now().UTC(),',
+  '\t\t"service": "kymark-server",\n\t\t"auditWriteFailures": s.auditFailures.Load(),\n\t\t"time":    time.Now().UTC(),'),
 
  ("a failed audit write is discarded again", SERVER, "TestAuditWriteFailureIsNotSilent",
   "\t_, err := s.audit.Log(r.Context(), action, userID, deviceID, clientIP(r), details)\n\tif err == nil {",

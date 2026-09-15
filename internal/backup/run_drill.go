@@ -6,7 +6,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 // RunDrill serializes HTTP and CLI drills against the same scratch root before collecting

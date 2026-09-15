@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"github.com/Busness-app/ky-primitives/keyfile"
-	"github.com/Busness-app/kybookmarks-server/internal/audit"
-	"github.com/Busness-app/kybookmarks-server/internal/backup"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/audit"
+	"github.com/Busness-app/kymark-server/internal/backup"
+	"github.com/Busness-app/kymark-server/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +36,7 @@ func TestRestoreRefusesWrongServiceBeforeReadingShares(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err = restore(capsulePath, t.TempDir(), "KyBookmarks", nil, &out)
+	err = restore(capsulePath, t.TempDir(), "KyMark", nil, &out)
 	if err == nil {
 		t.Fatal("a capsule for another service was accepted")
 	}

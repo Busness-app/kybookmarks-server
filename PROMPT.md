@@ -1,6 +1,6 @@
-# KyBookmarks
+# KyMark
 
-KyBookmarks is a standalone, self-hosted bookmark manager. It provides a web
+KyMark is a standalone, self-hosted bookmark manager. It provides a web
 application, Chrome and Firefox extensions, and Android and iOS applications.
 The product is independent from KyPost in v1, but reuses KyPost patterns and
 services where useful. Future Ky products may provide a single-pane-of-glass
@@ -28,7 +28,7 @@ assets: Space Grotesk for interface text and IBM Plex Mono for technical data.
 
 ## Authentication and account rules
 
-- KyBookmarks has standalone accounts using email and password.
+- KyMark has standalone accounts using email and password.
 - Passwords require at least 12 characters. Do not require arbitrary character
   classes; allow long passwords.
 - MFA is optional. Supported methods are TOTP and push MFA through the existing
@@ -134,18 +134,18 @@ Rules:
 
 - Chrome and Firefox extensions synchronize the native browser bookmark tree in
   both directions.
-- Sync scope is configurable per browser: a dedicated `KyBookmarks` root or
+- Sync scope is configurable per browser: a dedicated `KyMark` root or
   the entire browser bookmark tree.
 - First sync offers merge or replace. Replace removes browser bookmarks only
   after exporting them to recoverable HTML and receiving explicit confirmation.
-- Browser deletions become KyBookmarks trash items for 90 days.
+- Browser deletions become KyMark trash items for 90 days.
 - Import, move, and sync operations reject folders exceeding five levels and
   report the affected items.
 - Browser bookmark HTML import merges at the top level. Users can fully merge
   imported folders into existing folders. Same-name folder conflicts prompt the
   user to merge or keep separate.
 - Standard browser HTML export is plaintext and performed client-side.
-- KyBookmarks encrypted archive export/import is also client-side and uses its
+- KyMark encrypted archive export/import is also client-side and uses its
   separate archive password.
 
 ## Mobile and web behavior
@@ -165,7 +165,7 @@ Rules:
 - Administrators back up Docker volumes themselves. There is no built-in backup
   and restore feature in v1.
 - No per-user storage quotas in v1.
-- Public API access is deferred; the API is private to KyBookmarks clients.
+- Public API access is deferred; the API is private to KyMark clients.
 - API and synchronization requests have separate per-user rate limits.
 - Administrators can view structured audit logs in the web interface. Logs may
   contain authentication, account, administration, and synchronization events,

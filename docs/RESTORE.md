@@ -1,6 +1,6 @@
-# Restoring KyBookmarks from a capsule
+# Restoring KyMark from a capsule
 
-This is the procedure for bringing a KyBookmarks server back from a `.kycap` backup after the
+This is the procedure for bringing a KyMark server back from a `.kycap` backup after the
 original is gone. It needs three things, held by three different parties by design:
 
 | Thing | Who has it |
@@ -24,7 +24,7 @@ command pins and verifies a digest.
 
 ## What a capsule holds
 
-Everything a fresh KyBookmarks needs to be the old one:
+Everything a fresh KyMark needs to be the old one:
 
 | Path in the capsule | Restores to | What it is |
 |---|---|---|
@@ -45,9 +45,9 @@ far as the server is concerned: accounts, session tokens, the audit chain and it
 ## Before you start
 
 - **Pick the capsule.** In the KyRecovery dashboard, open Capsules, find the newest one for
-  service `KyBookmarks` that is not flagged corrupt, and note its `capsule_id`, `created_at`
+  service `KyMark` that is not flagged corrupt, and note its `capsule_id`, `created_at`
   and `digest`. Download it with an operator session. From a local backup directory
-  (`KYBOOKMARKS_BACKUP_DIR`), the file is `KyBookmarks.<capsule-id>.kycap`; the newest is the
+  (`KYMARK_BACKUP_DIR`), the file is `KyMark.<capsule-id>.kycap`; the newest is the
   one to use unless you have a reason.
 - **Gather k custodians.** Each card carries one share, a single line. They type or paste it
   themselves; do not collect the shares in a file, a chat, or an email. Two shares in one
@@ -60,7 +60,7 @@ far as the server is concerned: accounts, session tokens, the audit chain and it
 With the binary (from a release, or `go build ./cmd/server`):
 
 ```bash
-kybookmarks-server restore -capsule KyBookmarks.cap-KyBookmarks-XXXXXXXX.kycap -to ./restored
+kymark-server restore -capsule KyMark.cap-KyMark-XXXXXXXX.kycap -to ./restored
 ```
 
 For a published-image install, and always on a fresh recovery machine, pin the commit you
@@ -74,25 +74,25 @@ in `.env` after the drill: see the README's upgrade note for moving off it.
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-d=$(docker buildx imagetools inspect ghcr.io/busness-app/kybookmarks-server:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busness-app/kybookmarks-server@$d" --repo Busness-app/kybookmarks-server \
-       --cert-identity https://github.com/Busness-app/kybookmarks-server/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kybookmarks-server@$d" --repo Busness-app/kybookmarks-server \
-       --cert-identity https://github.com/Busness-app/kybookmarks-server/.github/workflows/ci.yml@refs/heads/master \
+d=$(docker buildx imagetools inspect ghcr.io/busness-app/kymark-server:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busness-app/kymark-server@$d" --repo Busness-app/kymark-server \
+       --cert-identity https://github.com/Busness-app/kymark-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kymark-server@$d" --repo Busness-app/kymark-server \
+       --cert-identity https://github.com/Busness-app/kymark-server/.github/workflows/ci.yml@refs/heads/master \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
-  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYBOOKMARKS_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-      && echo "KYBOOKMARKS_IMAGE=ghcr.io/busness-app/kybookmarks-server@$d" >> "$t" && mv "$t" .env) \
-  && grep -qxF "KYBOOKMARKS_IMAGE=ghcr.io/busness-app/kybookmarks-server@$d" .env
+  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYMARK_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+      && echo "KYMARK_IMAGE=ghcr.io/busness-app/kymark-server@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KYMARK_IMAGE=ghcr.io/busness-app/kymark-server@$d" .env
 ```
 
 Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
-effect is exactly that digest. A source install passes on its `kybookmarks-server:local` build instead,
+effect is exactly that digest. A source install passes on its `kymark-server:local` build instead,
 since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
 two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
 
 ```bash
 imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
-printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kybookmarks-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kybookmarks-server:local' \
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kymark-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kymark-server:local' \
   || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
@@ -104,9 +104,9 @@ by you, not by root and not by the image's user. `--no-deps` keeps the real serv
 ```bash
 mkdir -m 700 restored
 docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
-  -v "$PWD/KyBookmarks.cap-KyBookmarks-XXXXXXXX.kycap:/in.kycap:ro" \
+  -v "$PWD/KyMark.cap-KyMark-XXXXXXXX.kycap:/in.kycap:ro" \
   -v "$PWD/restored:/restored" \
-  kybookmarks-server restore -capsule /in.kycap -to /restored
+  kymark-server restore -capsule /in.kycap -to /restored
 ```
 
 The command reads the custodian shares from stdin, one per line, then Ctrl-D. Shares are
@@ -118,8 +118,8 @@ Delete it afterwards; a file holding k shares is the suite key in a file.
 On success it prints the authenticated manifest:
 
 ```
-Restored 8 files from capsule cap-KyBookmarks-1788604943344953387
-  service:      KyBookmarks (v0.2.0)
+Restored 8 files from capsule cap-KyMark-1788604943344953387
+  service:      KyMark (v0.2.0)
   created:      2026-09-05T10:42:23Z
   recovery key: 51e2d2e1...
   payload hash: 28db3b8d...
@@ -134,7 +134,7 @@ Failures you may see, and what they mean:
 
 | Message | Meaning |
 |---|---|
-| `capsule is for service "KyBookmarks", this instance is "X"` | You passed `-service` as something else. Only override it if the backup was made under a different name |
+| `capsule is for service "KyMark", this instance is "X"` | You passed `-service` as something else. Only override it if the backup was made under a different name |
 | `shamir: fewer shares than the threshold requires: got 1` | Fewer than k valid lines were read. Check for a missed line or a truncated paste |
 | `restore target directory is not empty` | Use an empty directory. The restore never overwrites |
 | a decrypt or integrity error | Wrong shares (from a different ceremony), a share mistyped, or a damaged file. Re-download and retry with the custodians |
@@ -150,7 +150,7 @@ the backup was made with and where each file goes.
 
 ## Step 3: put it in service
 
-Two volumes: `kybookmarks_data` (`/app/data`) and `kybookmarks_config` (`/app/config`). Both
+Two volumes: `kymark_data` (`/app/data`) and `kymark_config` (`/app/config`). Both
 must be empty before the copy, for the same reason Step 1 demands an empty directory. A
 capsule carries `kybookmarks.db` but never its `-wal` and `-shm` sidecars; a write-ahead log
 left over from the old database would be replayed into the restored one at first open,
@@ -158,7 +158,7 @@ mixing two databases. A leftover `audit.state` would describe a log that no long
 
 ```bash
 docker compose down
-docker compose run --rm --no-deps --entrypoint sh kybookmarks-server -c 'find /app/data /app/config -mindepth 1 | wc -l'
+docker compose run --rm --no-deps --entrypoint sh kymark-server -c 'find /app/data /app/config -mindepth 1 | wc -l'
 ```
 
 That must print `0`. If it does not, the old
@@ -169,7 +169,7 @@ does not own:
 
 ```bash
 mkdir -m 700 old-data
-docker compose run --rm --no-deps --user root -v "$PWD/old-data:/out" --entrypoint sh kybookmarks-server \
+docker compose run --rm --no-deps --user root -v "$PWD/old-data:/out" --entrypoint sh kymark-server \
   -c 'mkdir /out/data /out/config && cp -a /app/data/. /out/data/ && cp -a /app/config/. /out/config/ && find /out -type f | wc -l'
 ```
 
@@ -181,20 +181,20 @@ Only with the copy confirmed, remove the volumes. This is irreversible:
 
 ```bash
 docker compose down -v
-docker compose run --rm --no-deps --entrypoint sh kybookmarks-server -c 'find /app/data /app/config -mindepth 1 | wc -l'
+docker compose run --rm --no-deps --entrypoint sh kymark-server -c 'find /app/data /app/config -mindepth 1 | wc -l'
 ```
 
 With `0` confirmed, copy the restored files in and start:
 
 ```bash
 docker compose run --rm --no-deps --user root --entrypoint sh \
-  -v "$PWD/restored:/from:ro" kybookmarks-server -c '
+  -v "$PWD/restored:/from:ro" kymark-server -c '
     cp -a /from/kybookmarks.db /from/recovery.pub /app/data/ 2>/dev/null;
     mkdir -p /app/data/audit /app/data/config &&
     cp -a /from/audit/audit.log /app/data/audit/ &&
     [ -f /from/config-sso/sso.json ] && cp -a /from/config-sso/sso.json /app/data/config/;
     cp -a /from/config/. /app/config/ &&
-    chown -R kybookmark:kybookmark /app/data /app/config &&
+    chown -R kymark:kymark /app/data /app/config &&
     find /app/data /app/config -type f -exec chmod 600 {} +'
 docker compose up -d
 ```
@@ -234,7 +234,7 @@ session cookie minted before the capsule still validates against the restored se
 
    ```bash
    docker compose down
-   docker compose run --rm --no-deps --user root --entrypoint sh kybookmarks-server \
+   docker compose run --rm --no-deps --user root --entrypoint sh kymark-server \
      -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /app/data/kybookmarks.db "DELETE FROM sessions; DELETE FROM pairing_sessions;"'
    docker compose up -d
    ```
@@ -265,7 +265,7 @@ session cookie minted before the capsule still validates against the restored se
 
    ```bash
    docker compose down
-   docker compose run --rm --no-deps --user root --entrypoint sh kybookmarks-server \
+   docker compose run --rm --no-deps --user root --entrypoint sh kymark-server \
      -c 'rm /app/config/enum.key /app/config/deployment.key && ls -A /app/config'
    docker compose up -d
    ```

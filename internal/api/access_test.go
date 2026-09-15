@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Busness-app/kybookmarks-server/internal/crypto"
-	"github.com/Busness-app/kybookmarks-server/internal/store"
+	"github.com/Busness-app/kymark-server/internal/crypto"
+	"github.com/Busness-app/kymark-server/internal/store"
 )
 
 func TestSecondAccountCanBeCreated(t *testing.T) {

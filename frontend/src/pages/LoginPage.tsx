@@ -203,12 +203,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ loggedInUser, onLoginSucce
         <div style={{ padding: '2rem 1.75rem 1rem', textAlign: 'center' }}>
           <div style={{ display: 'inline-flex', marginBottom: '0.75rem' }}>
             <img
-              src="/KyBookmarks.png"
-              alt="KyBookmarks"
+              src="/KyMark.png"
+              alt="KyMark"
               style={{ width: '64px', height: '64px', borderRadius: '14px', boxShadow: '0 0 20px rgba(77, 238, 234, 0.35)' }}
             />
           </div>
-          <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)' }}>KyBookmarks</h1>
+          <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)' }}>KyMark</h1>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
             {loggedInUser
               ? `Welcome, ${loggedInUser.displayName || loggedInUser.username}`
