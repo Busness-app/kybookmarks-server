@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,13 @@ import (
 // endpoint returning an RS256 ID token carrying the claims the test wants to assert on,
 // with the standard claims the verifier demands filled in.
 func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
+	srv, _ := stubIssuer(t, claims)
+	return srv
+}
+
+// stubIssuer is stubIdP that also hands back the signing key, so a test can mint its own
+// logout tokens. It advertises session-specific logout and issues a sid by default.
+func stubIssuer(t *testing.T, claims map[string]any) (*httptest.Server, *rsa.PrivateKey) {
 	t.Helper()
 	key := ssotest.Key(t)
 	mux := http.NewServeMux()
@@ -23,17 +31,18 @@ func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 	t.Cleanup(srv.Close)
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"issuer":                 srv.URL,
-			"authorization_endpoint": srv.URL + "/authorize",
-			"token_endpoint":         srv.URL + "/token",
-			"jwks_uri":               srv.URL + "/.well-known/jwks.json",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                               srv.URL,
+			"authorization_endpoint":               srv.URL + "/authorize",
+			"token_endpoint":                       srv.URL + "/token",
+			"jwks_uri":                             srv.URL + "/.well-known/jwks.json",
+			"backchannel_logout_session_supported": true,
 		})
 	})
 	mux.HandleFunc("/.well-known/jwks.json", ssotest.JWKS(key))
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().Unix()
-		full := map[string]any{"iss": srv.URL, "aud": "kybookmarks", "nonce": "testnonce", "iat": now, "exp": now + 300}
+		full := map[string]any{"iss": srv.URL, "aud": "kybookmarks", "nonce": "testnonce", "iat": now, "exp": now + 300, "sid": "sid-1"}
 		for k, v := range claims {
 			full[k] = v
 		}
@@ -43,7 +52,7 @@ func stubIdP(t *testing.T, claims map[string]any) *httptest.Server {
 			"token_type":   "Bearer",
 		})
 	})
-	return srv
+	return srv, key
 }
 
 // ssoCallback drives the callback with a state cookie the server would have set.

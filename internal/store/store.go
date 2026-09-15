@@ -19,6 +19,7 @@ var (
 	ErrConflict       = errors.New("version conflict")
 	ErrAlreadyExists  = errors.New("record already exists")
 	ErrAccountBlocked = errors.New("account suspended or disabled")
+	ErrSSOLoggedOut   = errors.New("sso session already logged out")
 )
 
 type Store struct {
@@ -162,8 +163,23 @@ func (s *Store) migrate() error {
 		value TEXT NOT NULL,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS sso_logout_events (
+		issuer TEXT NOT NULL,
+		client_id TEXT NOT NULL,
+		jti TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		sid TEXT NOT NULL,
+		issued_at INTEGER NOT NULL,
+		retain_until INTEGER NOT NULL,
+		PRIMARY KEY(issuer, client_id, jti)
+	);
+	CREATE INDEX IF NOT EXISTS idx_sso_logout_retain ON sso_logout_events(retain_until);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	if err := s.migrateSSOSessions(); err != nil {
 		return err
 	}
 
@@ -171,6 +187,41 @@ func (s *Store) migrate() error {
 	// index, which blocks creating any second unlinked account.
 	_, err := s.db.Exec(`UPDATE accounts SET sso_subject = NULL WHERE sso_subject = ''`)
 	return err
+}
+
+// migrateSSOSessions adds the identity columns back-channel logout matches on. Sessions
+// minted before the columns existed carry no identity, so a subject-wide logout could
+// never reach them; the one time the columns are added, sessions of SSO-linked accounts
+// are ended so nothing outlives the issuer's authority. Ciphertext is untouched.
+func (s *Store) migrateSSOSessions() error {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'sso_issuer'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	stmts := []string{
+		`ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN sso_client_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN sso_subject TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN sso_sid TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN sso_issued_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN sso_auth_time INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_sso ON sessions(sso_issuer, sso_client_id, sso_sid, sso_subject)`,
+		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM accounts WHERE sso_subject IS NOT NULL)`,
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range stmts {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Account methods
@@ -438,27 +489,102 @@ func (s *Store) DeleteAccount(id string) error {
 
 // Session methods
 
+// ssoScopeSQL matches sessions to a logout event on the same issuer and client. A
+// session-specific logout hits exactly that sid, and the subject too when present. A
+// subject-wide logout ends every session of that subject issued at or before the logout.
+// An unknown sid never widens into a subject logout. Args: see ssoScopeArgs.
+const ssoScopeSQL = `sso_issuer = ? AND sso_client_id = ? AND (
+	(? <> '' AND sso_sid = ? AND (? = '' OR sso_subject = ?))
+	OR (? = '' AND sso_subject = ? AND sso_issued_at <= ?))`
+
+func ssoScopeArgs(e SSOLogoutEvent) []any {
+	return []any{e.Issuer, e.ClientID, e.SID, e.SID, e.Subject, e.Subject, e.SID, e.Subject, e.IssuedAt}
+}
+
+// CreateSession inserts the session. An SSO session is refused when a logout for its sid,
+// or a subject-wide logout issued at or after its ID token, is already on record: the
+// logout may have arrived while the callback was still exchanging the code.
 func (s *Store) CreateSession(sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := `INSERT INTO sessions (token_hash, user_id, device_id, csrf_token, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`
-	_, err := s.db.Exec(query, sess.TokenHash, sess.UserID, sess.DeviceID, sess.CSRFToken, sess.ExpiresAt, sess.CreatedAt)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if sess.SSOIssuer != "" {
+		var fenced int
+		err := tx.QueryRow(`SELECT COUNT(*) FROM sso_logout_events WHERE issuer = ? AND client_id = ? AND retain_until > ? AND (
+			(sid <> '' AND sid = ? AND (subject = '' OR subject = ?))
+			OR (sid = '' AND subject = ? AND issued_at >= ?))`,
+			sess.SSOIssuer, sess.SSOClientID, time.Now().Unix(), sess.SSOSID, sess.SSOSubject, sess.SSOSubject, sess.SSOIssuedAt).Scan(&fenced)
+		if err != nil {
+			return err
+		}
+		if fenced > 0 {
+			return ErrSSOLoggedOut
+		}
+	}
+
+	query := `INSERT INTO sessions (token_hash, user_id, device_id, csrf_token, expires_at, created_at,
+		sso_issuer, sso_client_id, sso_subject, sso_sid, sso_issued_at, sso_auth_time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := tx.Exec(query, sess.TokenHash, sess.UserID, sess.DeviceID, sess.CSRFToken, sess.ExpiresAt, sess.CreatedAt,
+		sess.SSOIssuer, sess.SSOClientID, sess.SSOSubject, sess.SSOSID, sess.SSOIssuedAt, sess.SSOAuthTime); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ApplySSOLogout records a verified back-channel logout token and ends the sessions in
+// its scope in one transaction, returning how many it ended. A jti seen before, while
+// its record is retained, returns ErrAlreadyExists. The record outlives the token so a
+// replay after restart is still refused and a callback still in flight is fenced.
+func (s *Store) ApplySSOLogout(e SSOLogoutEvent, retainUntil time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM sso_logout_events WHERE retain_until <= ?`, time.Now().Unix()); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`INSERT INTO sso_logout_events (issuer, client_id, jti, subject, sid, issued_at, retain_until)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issuer, client_id, jti) DO NOTHING`,
+		e.Issuer, e.ClientID, e.JTI, e.Subject, e.SID, e.IssuedAt, retainUntil.Unix())
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return 0, ErrAlreadyExists
+	}
+	res, err = tx.Exec(`DELETE FROM sessions WHERE `+ssoScopeSQL, ssoScopeArgs(e)...)
+	if err != nil {
+		return 0, err
+	}
+	revoked, _ := res.RowsAffected()
+	return revoked, tx.Commit()
 }
 
 func (s *Store) GetSession(tokenHash string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := `SELECT token_hash, user_id, device_id, csrf_token, expires_at, created_at
+	query := `SELECT token_hash, user_id, device_id, csrf_token, expires_at, created_at,
+		sso_issuer, sso_client_id, sso_subject, sso_sid, sso_issued_at, sso_auth_time
 		FROM sessions WHERE token_hash = ? AND expires_at > ?`
 
 	var sess Session
 	var devID sql.NullString
 	err := s.db.QueryRow(query, tokenHash, time.Now().UTC()).Scan(
 		&sess.TokenHash, &sess.UserID, &devID, &sess.CSRFToken, &sess.ExpiresAt, &sess.CreatedAt,
+		&sess.SSOIssuer, &sess.SSOClientID, &sess.SSOSubject, &sess.SSOSID, &sess.SSOIssuedAt, &sess.SSOAuthTime,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

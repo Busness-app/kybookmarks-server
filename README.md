@@ -54,6 +54,12 @@ except `SYNC_SECRET`, which has none on purpose.
 | `KYBOOKMARKS_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on a private or CGNAT address. HTTPS stays mandatory; loopback never |
 | `KYBOOKMARKS_DNS` | unset | Only in `docker-compose.lan-dns.yml`: the container's DNS server, for LAN-only names |
 
+SSO is configured by an admin in the app, not by environment. When registering KyBookmarks as
+a client in KySignOn, set its back-channel logout URI to
+`https://<host>/api/auth/oidc/backchannel-logout` so a KySignOn sign-out or offboarding ends
+KyBookmarks sessions too. Without it, an SSO session lasts until it expires or the user signs
+out here.
+
 ## Disaster recovery
 
 Every backup is a `.kycap` capsule sealed to the suite recovery public key. The server holds

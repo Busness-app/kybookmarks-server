@@ -31,6 +31,19 @@ type Session struct {
 	CSRFToken string    `json:"csrfToken"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Set only on sessions minted from an SSO login; back-channel logout matches on them.
+	SSOIssuer   string `json:"-"`
+	SSOClientID string `json:"-"`
+	SSOSubject  string `json:"-"`
+	SSOSID      string `json:"-"`
+	SSOIssuedAt int64  `json:"-"` // ID token iat, unix seconds
+	SSOAuthTime int64  `json:"-"` // ID token auth_time, unix seconds; 0 when absent
+}
+
+// SSOLogoutEvent is a verified back-channel logout token reduced to what revocation needs.
+type SSOLogoutEvent struct {
+	Issuer, ClientID, JTI, Subject, SID string
+	IssuedAt                            int64 // unix seconds
 }
 
 // Device represents a registered client device.

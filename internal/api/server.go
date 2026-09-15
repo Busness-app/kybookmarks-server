@@ -219,6 +219,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/sso/callback", s.handleSSOCallback)
+	mux.HandleFunc("POST /api/auth/oidc/backchannel-logout", s.handleSSOLogout)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/setup", s.handleSetupCheck)
 	mux.HandleFunc("POST /api/setup", s.handleSetupInit)
@@ -417,6 +418,12 @@ func (s *Server) validateCSRF(r *http.Request, sess *store.Session) bool {
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID, deviceID string) (string, error) {
+	return s.startSessionWith(w, r, &store.Session{UserID: userID, DeviceID: deviceID})
+}
+
+// startSessionWith mints the token and CSRF secret for sess, stores it, and sets the
+// cookies only once the row exists. Callers fill the identity fields.
+func (s *Server) startSessionWith(w http.ResponseWriter, r *http.Request, sess *store.Session) (string, error) {
 	rawToken, err := crypto.GenerateRandomHex(32)
 	if err != nil {
 		return "", err
@@ -427,14 +434,10 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID, de
 	}
 
 	now := time.Now().UTC()
-	sess := &store.Session{
-		TokenHash: hashToken(rawToken),
-		UserID:    userID,
-		DeviceID:  deviceID,
-		CSRFToken: csrfToken,
-		ExpiresAt: now.Add(30 * 24 * time.Hour),
-		CreatedAt: now,
-	}
+	sess.TokenHash = hashToken(rawToken)
+	sess.CSRFToken = csrfToken
+	sess.ExpiresAt = now.Add(30 * 24 * time.Hour)
+	sess.CreatedAt = now
 
 	if err := s.store.CreateSession(sess); err != nil {
 		return "", err

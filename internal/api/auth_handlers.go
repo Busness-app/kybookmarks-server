@@ -579,6 +579,12 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "identity provider returned no subject claim", http.StatusBadGateway)
 		return
 	}
+	// A session the issuer cannot name is one it cannot end.
+	if disc.SessionLogout && claims.SessionID == "" {
+		s.auditEvent(r, "sso.token_rejected", "", "", "issuer supports session logout but sent no sid")
+		http.Error(w, "identity token carries no session id", http.StatusBadGateway)
+		return
+	}
 
 	var user *store.Account
 	if linkUserID != "" {
@@ -655,7 +661,24 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.startSession(w, r, user.ID, "")
+	_, err = s.startSessionWith(w, r, &store.Session{
+		UserID:      user.ID,
+		SSOIssuer:   settings.IssuerURL,
+		SSOClientID: settings.ClientID,
+		SSOSubject:  claims.Subject,
+		SSOSID:      claims.SessionID,
+		SSOIssuedAt: claims.IssuedAt,
+		SSOAuthTime: claims.AuthTime,
+	})
+	if errors.Is(err, store.ErrSSOLoggedOut) {
+		s.auditEvent(r, "sso.login_rejected", user.ID, "", "issuer logged this session out before the callback completed")
+		http.Error(w, "session was logged out by the identity provider", http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
 	s.auditEvent(r, "auth.sso_login", user.ID, "", "user signed in via SSO")
 
 	http.Redirect(w, r, "/", http.StatusFound)

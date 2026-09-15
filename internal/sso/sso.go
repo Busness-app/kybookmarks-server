@@ -92,6 +92,9 @@ type DiscoveryDoc struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+	// SessionLogout is the issuer promising a sid in every ID token, so a login without
+	// one could never be ended by a session-specific back-channel logout.
+	SessionLogout bool `json:"backchannel_logout_session_supported"`
 }
 
 // httpClient is the client the issuer is reached with: the caller's, or a bounded default.
@@ -196,6 +199,10 @@ type Claims struct {
 	Name          string `json:"name"`
 	Username      string `json:"preferred_username"`
 	Role          string `json:"role"`
+	// Identity a session keeps so a back-channel logout can find it. Not read from userinfo.
+	SessionID string `json:"-"`
+	IssuedAt  int64  `json:"-"` // unix seconds
+	AuthTime  int64  `json:"-"` // unix seconds; 0 when the issuer sent none
 }
 
 // NewVerifier builds a JWKS-backed verifier for one issuer and this client. Callers keep it
@@ -216,15 +223,23 @@ func VerifiedClaims(ctx context.Context, v *oidcverify.Verifier, idToken, nonce,
 	if err != nil {
 		return nil, err
 	}
+	if vc.IssuedAt.IsZero() {
+		return nil, errors.New("identity token carries no iat")
+	}
 	claims := &Claims{
-		Subject:  vc.Subject,
-		Email:    vc.String("email"),
-		Name:     vc.String("name"),
-		Username: vc.String("preferred_username"),
-		Role:     vc.String("role"),
+		Subject:   vc.Subject,
+		Email:     vc.String("email"),
+		Name:      vc.String("name"),
+		Username:  vc.String("preferred_username"),
+		Role:      vc.String("role"),
+		SessionID: vc.String("sid"),
+		IssuedAt:  vc.IssuedAt.Unix(),
 	}
 	if raw, ok := vc.Raw["email_verified"]; ok {
 		_ = json.Unmarshal(raw, &claims.EmailVerified)
+	}
+	if raw, ok := vc.Raw["auth_time"]; ok {
+		_ = json.Unmarshal(raw, &claims.AuthTime)
 	}
 
 	if (claims.Email == "" || claims.Name == "") && userinfoEndpoint != "" && accessToken != "" {

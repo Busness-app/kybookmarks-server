@@ -88,6 +88,7 @@ admin role.
 | `GET /api/auth/sso-config` | Nothing. Returns the issuer and client ID an SSO login needs. |
 | `GET /api/auth/oidc/login`, `/auth/oidc/login`, `/auth/sso/login` | SSO being enabled. Sets the PKCE and state cookie. |
 | `GET /api/auth/oidc/callback` and aliases | The state cookie matching the `state` parameter, then a back-channel code exchange with the issuer. |
+| `POST /api/auth/oidc/backchannel-logout` | A signed `logout+jwt` from the configured issuer for this client ID. No cookie or CSRF token is consulted. See "SSO logout" below. |
 | `POST /api/devices/pair/redeem` | The pairing token, which is 32 random bytes, single-use, and expires after 90 seconds. |
 | `POST /api/sync/events` | The `SYNC_SECRET` HMAC signature. See above. |
 
@@ -105,6 +106,32 @@ An SSO identity may adopt an existing local account only when the provider asser
 providers let the end user set it. A provider that returns no `sub` claim is refused. Linking
 an existing session to an identity still works through `?link=true`, which carries the user
 ID in the server-set state cookie.
+
+### SSO logout
+
+A session minted by an SSO login records the issuer, client ID, subject, the issuer's `sid`
+and the ID token's `iat` and `auth_time`. When the issuer advertises
+`backchannel_logout_session_supported`, an ID token without a `sid` is refused: a session
+the issuer cannot name is one it cannot end.
+
+`POST /api/auth/oidc/backchannel-logout` accepts one `logout_token` in a form body of at most
+64 KiB. `ky-primitives/oidcverify` checks the signature, `typ`, issuer, audience, lifetime,
+`events` claim and the absence of a `nonce`; an ID token is never accepted as a logout and a
+logout token never authenticates. A token with a `sid` ends exactly that session, and only
+when the `sub` matches too if one is present. A token with only a `sub` ends every SSO
+session of that subject whose ID token was issued no later than the logout. An unknown `sid`
+is a harmless success, never a subject-wide logout.
+
+The `jti` is recorded in the same transaction as the revocation and kept past the token's
+lifetime, so a replay is refused across restarts and a login whose callback was still in
+flight when the logout arrived is refused when it tries to mint its session. The audit
+entry `auth.sso_logout` carries the `jti` and the number of sessions actually ended; the
+audit chain is a separate file, so it is written after the transaction commits and a failed
+write shows in `/api/health` rather than undoing the logout.
+
+Outstanding logouts are honoured after an admin disables SSO. Device sessions minted by
+pairing carry no SSO identity and are not ended by a back-channel logout; revoke the device.
+Local password sessions are never affected.
 
 ## Known Limitations & Trust Boundaries
 

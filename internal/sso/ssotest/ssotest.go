@@ -29,9 +29,14 @@ func Key(t testing.TB) *rsa.PrivateKey {
 
 // Mint signs claims as an RS256 JWT under key.
 func Mint(t testing.TB, key *rsa.PrivateKey, claims map[string]any) string {
+	return MintTyped(t, key, "JWT", claims)
+}
+
+// MintTyped is Mint with an explicit typ header, e.g. "logout+jwt".
+func MintTyped(t testing.TB, key *rsa.PrivateKey, typ string, claims map[string]any) string {
 	t.Helper()
 	enc := base64.RawURLEncoding.EncodeToString
-	hdr, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": KeyID})
+	hdr, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": typ, "kid": KeyID})
 	pl, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
